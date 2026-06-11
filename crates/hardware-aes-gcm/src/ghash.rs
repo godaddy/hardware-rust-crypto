@@ -15,11 +15,10 @@ pub(crate) struct GHashKey {
 }
 
 impl GHashKey {
-    pub(crate) fn init_in_place(dst: *mut Self, hash_subkey: [u8; 16]) {
-        let mut h = hash_subkey;
-        h.reverse();
-        let polyval_key = mulx(&h);
-        h.zeroize();
+    pub(crate) fn init_in_place(dst: *mut Self, hash_subkey: &mut [u8; 16]) {
+        hash_subkey.reverse();
+        let polyval_key = mulx(hash_subkey);
+        hash_subkey.zeroize();
         // SAFETY: caller provides valid writable storage for Self and the field
         // pointer stays within that allocation.
         unsafe { ptr::addr_of_mut!((*dst).polyval_key).write(polyval_key) };
@@ -135,7 +134,7 @@ mod imp {
             out
         }
 
-        #[target_feature(enable = "neon")]
+        #[target_feature(enable = "aes", enable = "neon")]
         unsafe fn new_inner(h: &[u8; 16]) -> Self {
             Self {
                 // SAFETY: h is a valid 16-byte initialized buffer.
@@ -144,7 +143,7 @@ mod imp {
             }
         }
 
-        #[target_feature(enable = "neon")]
+        #[target_feature(enable = "aes", enable = "neon")]
         unsafe fn update_block_inner(&mut self, block: &[u8; 16]) {
             // SAFETY: block is a valid 16-byte initialized buffer.
             let y = veorq_u8(self.y, unsafe { vld1q_u8(block.as_ptr()) });
@@ -166,10 +165,11 @@ mod imp {
     pub(super) fn hardware_available() -> bool {
         std::arch::is_aarch64_feature_detected!("aes")
             && std::arch::is_aarch64_feature_detected!("neon")
+            && std::arch::is_aarch64_feature_detected!("pmull")
     }
 
     #[inline]
-    #[target_feature(enable = "neon")]
+    #[target_feature(enable = "aes", enable = "neon")]
     #[allow(clippy::many_single_char_names)]
     unsafe fn karatsuba1(x: uint8x16_t, y: uint8x16_t) -> (uint8x16_t, uint8x16_t, uint8x16_t) {
         let m = pmull(
@@ -182,7 +182,7 @@ mod imp {
     }
 
     #[inline]
-    #[target_feature(enable = "neon")]
+    #[target_feature(enable = "aes", enable = "neon")]
     unsafe fn karatsuba2(h: uint8x16_t, m: uint8x16_t, l: uint8x16_t) -> (uint8x16_t, uint8x16_t) {
         let t0 = veorq_u8(m, vextq_u8(l, h, 8));
         let t1 = veorq_u8(h, l);
@@ -195,7 +195,7 @@ mod imp {
     }
 
     #[inline]
-    #[target_feature(enable = "neon")]
+    #[target_feature(enable = "aes", enable = "neon")]
     unsafe fn mont_reduce(x23: uint8x16_t, x01: uint8x16_t) -> uint8x16_t {
         let poly =
             vreinterpretq_u8_p128(1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57);
@@ -206,7 +206,7 @@ mod imp {
     }
 
     #[inline]
-    #[target_feature(enable = "neon")]
+    #[target_feature(enable = "aes", enable = "neon")]
     unsafe fn pmull(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
         // SAFETY: uint8x16_t and the vmull_p64 result are both 128-bit vector
         // values. This matches the upstream POLYVAL PMULL backend conversion.
@@ -219,7 +219,7 @@ mod imp {
     }
 
     #[inline]
-    #[target_feature(enable = "neon")]
+    #[target_feature(enable = "aes", enable = "neon")]
     unsafe fn pmull2(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
         // SAFETY: uint8x16_t and the vmull_p64 result are both 128-bit vector
         // values. This matches the upstream POLYVAL PMULL backend conversion.
@@ -276,7 +276,7 @@ mod imp {
             out
         }
 
-        #[target_feature(enable = "pclmulqdq")]
+        #[target_feature(enable = "sse2", enable = "pclmulqdq")]
         unsafe fn new_inner(h: &[u8; 16]) -> Self {
             Self {
                 // SAFETY: h points to an initialized 16-byte range.
@@ -285,7 +285,7 @@ mod imp {
             }
         }
 
-        #[target_feature(enable = "pclmulqdq")]
+        #[target_feature(enable = "sse2", enable = "pclmulqdq")]
         unsafe fn update_block_inner(&mut self, block: &[u8; 16]) {
             let h = self.h;
 
@@ -353,7 +353,8 @@ mod imp {
     }
 
     pub(super) fn hardware_available() -> bool {
-        std::arch::is_x86_feature_detected!("pclmulqdq")
+        std::arch::is_x86_feature_detected!("sse2")
+            && std::arch::is_x86_feature_detected!("pclmulqdq")
     }
 
     #[inline]

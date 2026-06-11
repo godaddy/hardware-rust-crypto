@@ -69,10 +69,28 @@ fn asherah_layout_is_ciphertext_tag_nonce() {
 #[test]
 fn tampering_fails_authentication() {
     let candidate = HardwareAes256Gcm::new(&KEY).unwrap();
-    let mut ciphertext = candidate.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-    ciphertext[0] ^= 0x80;
+    let ciphertext = candidate.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
 
-    assert!(candidate.decrypt(&NONCE, AAD, &ciphertext).is_err());
+    for byte_index in 0..ciphertext.len() {
+        let mut tampered = ciphertext.clone();
+        tampered[byte_index] ^= 0x80;
+        assert!(
+            candidate.decrypt(&NONCE, AAD, &tampered).is_err(),
+            "tampered byte {byte_index} authenticated"
+        );
+    }
+
+    let mut tampered_aad = AAD.to_vec();
+    tampered_aad[0] ^= 0x80;
+    assert!(candidate
+        .decrypt(&NONCE, &tampered_aad, &ciphertext)
+        .is_err());
+
+    let mut tampered_nonce = NONCE;
+    tampered_nonce[0] ^= 0x80;
+    assert!(candidate
+        .decrypt(&tampered_nonce, AAD, &ciphertext)
+        .is_err());
 }
 
 #[test]
@@ -102,8 +120,11 @@ fn nist_known_answer_vectors() {
 #[test]
 fn randomized_differential_against_rustcrypto() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x4841_5244_5741_5245);
-    for plaintext_len in [0_usize, 1, 2, 15, 16, 17, 31, 32, 63, 64, 255, 1024] {
-        for aad_len in [0_usize, 1, 15, 16, 33] {
+    for plaintext_len in [
+        0_usize, 1, 2, 3, 7, 15, 16, 17, 31, 32, 63, 64, 65, 127, 128, 129, 255, 256, 257, 1024,
+        4096,
+    ] {
+        for aad_len in [0_usize, 1, 2, 15, 16, 17, 31, 32, 33, 127] {
             let mut key = [0_u8; 32];
             let mut nonce = [0_u8; NONCE_SIZE];
             let mut plaintext = vec![0_u8; plaintext_len];

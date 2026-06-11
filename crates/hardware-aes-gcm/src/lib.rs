@@ -100,8 +100,7 @@ impl KeyState {
         // SAFETY: dst points to valid writable KeyState storage supplied by the
         // caller. The field pointer stays within that allocation.
         let ghash_ptr = unsafe { ptr::addr_of_mut!((*dst).ghash) };
-        ghash::GHashKey::init_in_place(ghash_ptr, hash_subkey);
-        hash_subkey.zeroize();
+        ghash::GHashKey::init_in_place(ghash_ptr, &mut hash_subkey);
         Ok(())
     }
 
