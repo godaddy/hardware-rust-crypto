@@ -1,0 +1,21 @@
+[package]
+name = "hardware-aes-gcm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# getrandom supplies the 96-bit nonce salt for the generated-nonce APIs; it is
+# an OS-entropy wrapper, not a cipher (passes the production dependency guard).
+getrandom = "0.3"
+subtle = { version = "2.6", default-features = false }
+zeroize = "1.8"
+
+[target.'cfg(unix)'.dependencies]
+# pthread_atfork-based fork detection for nonce re-salting on Unix.
+libc = "0.2"
+
+[lints]
+workspace = true

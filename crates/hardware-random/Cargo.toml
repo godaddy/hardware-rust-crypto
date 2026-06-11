@@ -1,0 +1,26 @@
+[package]
+name = "hardware-random"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["cpu-rng-reseed"]
+# Blend CPU hardware-RNG entropy (RDSEED on x86_64, RNDRRS/FEAT_RNG on
+# aarch64) through the generator state on reseed instead of querying the OS,
+# when the instruction is available to the guest. Runtime-detected with OS
+# fallback; uses only core::arch, so it adds no dependency. Disable to always
+# reseed from the OS.
+cpu-rng-reseed = []
+
+[dependencies]
+getrandom = "0.3"
+zeroize = "1.8"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true
