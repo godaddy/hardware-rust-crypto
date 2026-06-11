@@ -20,7 +20,6 @@ use ring::aead::{Aad, LessSafeKey, Nonce as RingNonce, UnboundKey, AES_256_GCM};
 const KEY: [u8; 32] = [0x42; 32];
 const AAD: &[u8] = b"";
 const SIZES: [usize; 6] = [16, 64, 256, 1024, 4096, 16 * 1024];
-const RECORD_PAYLOAD_SIZE: usize = 256;
 
 #[repr(align(64))]
 struct AlignedStorage([u8; 512]);
@@ -29,12 +28,6 @@ fn nonce(counter: u64) -> [u8; 12] {
     let mut nonce = [0_u8; 12];
     nonce[4..].copy_from_slice(&counter.to_be_bytes());
     nonce
-}
-
-fn derived_key(counter: u64) -> [u8; 32] {
-    let mut key = KEY;
-    key[..8].copy_from_slice(&counter.to_be_bytes());
-    key
 }
 
 fn bench_encrypt(c: &mut Criterion) {
@@ -183,77 +176,6 @@ fn bench_decrypt(c: &mut Criterion) {
     group.finish();
 }
 
-/// Per-record hot path: expand a fresh key, encrypt one payload,
-/// drop (and for the candidate, zeroize) the key state.
-fn bench_per_record_pattern(c: &mut Criterion) {
-    let mut group = c.benchmark_group("aes-256-gcm per-record pattern (setup+encrypt+drop, 256B)");
-    group.throughput(Throughput::Bytes(RECORD_PAYLOAD_SIZE as u64));
-    let plaintext = vec![0xa5; RECORD_PAYLOAD_SIZE];
-
-    group.bench_function("candidate", |b| {
-        let mut ctr = 0_u64;
-        b.iter(|| {
-            ctr = ctr.wrapping_add(1);
-            let key = HardwareAes256Gcm::new(black_box(&derived_key(ctr))).unwrap();
-            key.encrypt(&nonce(ctr), AAD, black_box(&plaintext))
-                .unwrap()
-        });
-    });
-
-    group.bench_function("candidate-placed", |b| {
-        let layout = HardwareAes256Gcm::key_state_layout();
-        let mut storage = AlignedStorage([0_u8; 512]);
-        let mut ctr = 0_u64;
-        b.iter(|| {
-            ctr = ctr.wrapping_add(1);
-            let slot = UninitKeyStateSlot::new(&mut storage.0[..layout.size]).unwrap();
-            let key = HardwareAes256GcmIn::new_in(black_box(&derived_key(ctr)), slot).unwrap();
-            key.encrypt(&nonce(ctr), AAD, black_box(&plaintext))
-                .unwrap()
-        });
-    });
-
-    group.bench_function("rustcrypto", |b| {
-        let mut ctr = 0_u64;
-        b.iter(|| {
-            ctr = ctr.wrapping_add(1);
-            let key = Aes256Gcm::new_from_slice(black_box(&derived_key(ctr))).unwrap();
-            key.encrypt(
-                RustCryptoNonce::from_slice(&nonce(ctr)),
-                Payload {
-                    msg: black_box(plaintext.as_slice()),
-                    aad: AAD,
-                },
-            )
-            .unwrap()
-        });
-    });
-
-    group.bench_function("ring", |b| {
-        let mut ctr = 0_u64;
-        b.iter_batched(
-            || {
-                ctr = ctr.wrapping_add(1);
-                (derived_key(ctr), nonce(ctr), plaintext.clone())
-            },
-            |(raw_key, nonce, mut in_out)| {
-                let key =
-                    LessSafeKey::new(UnboundKey::new(&AES_256_GCM, black_box(&raw_key)).unwrap());
-                key.seal_in_place_append_tag(
-                    RingNonce::assume_unique_for_key(nonce),
-                    Aad::from(AAD),
-                    black_box(&mut in_out),
-                )
-                .unwrap();
-                in_out
-            },
-            BatchSize::SmallInput,
-        );
-    });
-
-    group.finish();
-}
-
 fn bench_key_setup(c: &mut Criterion) {
     c.bench_function("aes-256-gcm key setup/candidate", |b| {
         b.iter(|| HardwareAes256Gcm::new(black_box(&KEY)).unwrap());
@@ -284,7 +206,6 @@ fn bench_key_setup(c: &mut Criterion) {
 fn bench_aes_gcm(c: &mut Criterion) {
     bench_encrypt(c);
     bench_decrypt(c);
-    bench_per_record_pattern(c);
     bench_key_setup(c);
 }
 

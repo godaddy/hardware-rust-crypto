@@ -21,8 +21,6 @@ plaintext, a two-pass design `ring`'s decrypt-then-verify avoids; see
 | --- | --- | --- | --- | --- |
 | encrypt 1 KiB | 154 | 213 | 4950 | 565 |
 | encrypt 16 KiB | 1950 | 2330 | 75500 | 8570 |
-| per-record key (setup + encrypt 256 B + drop) | 167 | 188 | 2060 | 320 |
-| AES key generation (32-byte) | 24 | - | - | - |
 
 Reusable AES-256-GCM key-state size: **this crate 368 B / ring 544 B /
 RustCrypto 992 B**. Measured on a MacBook Pro (Apple M4 Max, single machine);

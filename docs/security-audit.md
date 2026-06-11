@@ -162,8 +162,8 @@ Bits, and Cure53 reports and OSTIF-coordinated open-source crypto audits.
 
 ### 4.1 Assets
 
-- **Long-lived key material**: AES-256 system/intermediate/data-row keys
-  cached in the consuming application's memory tiers.
+- **Long-lived key material**: AES-256 keys cached in the consuming
+  application's memory.
 - **Key-equivalent state**: expanded AES round keys and GHASH key powers.
 - **CSPRNG state**: AES-CTR generator seeds and counters.
 - **Plaintext**: data-encryption-key material and protected records.

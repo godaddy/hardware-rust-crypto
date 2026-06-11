@@ -15,10 +15,9 @@ candidate is 13x to 43x faster.** A default `cargo build` of stock `aes-gcm`
 0.10 on aarch64 silently uses fixsliced *software* AES and *software* POLYVAL;
 the hardware backends engage only if every build of every consumer remembers
 `RUSTFLAGS="--cfg aes_armv8 --cfg polyval_armv8"`. Unmodified RustCrypto costs
-13x at 64-byte encrypt (571 ns vs 44.2 ns), 37x at 1 KiB, 43x at 16 KiB, and
-12x on the per-record key pattern. The candidate cannot regress this way:
-hardware paths are the only paths, and construction fails loudly where they
-are missing.
+13x at 64-byte encrypt (571 ns vs 44.2 ns), 37x at 1 KiB, and 43x at 16 KiB.
+The candidate cannot regress this way: hardware paths are the only paths, and
+construction fails loudly where they are missing.
 
 **2. The candidate also beats RustCrypto's *best* configuration at every
 payload of 64 bytes and up.** With the ARMv8 cfgs enabled the stock crates
@@ -30,14 +29,14 @@ type reserves space for its software variant, versus **368 bytes** for the
 candidate (240 bytes of round keys + 128 bytes of GHASH key powers) - 11
 cached keys per 4 KiB guarded page versus 4.
 
-**3. Against `ring`, encryption wins at every size and the per-record path
-wins; decryption trades speed for verify-before-decrypt.** Allocation-free
-encrypt beats ring at every size from 16 B through 16 KiB, including bulk:
-133 ns vs 213 ns at 1 KiB and 1.75 us vs 2.33 us at 16 KiB, because the stitched
-loop keeps the AES and carryless-multiply pipelines busy at once rather than
-draining them in sequence. The caller-placed per-record key pattern (key setup +
-encrypt 256 B + drop, *including* the zeroizing wipe ring does not perform) is
-**faster than ring**: 158 ns vs 188 ns. Decryption deliberately trails ring on
+**3. Against `ring`, encryption wins at every size; decryption trades speed for
+verify-before-decrypt.** Allocation-free encrypt beats ring at every size from
+16 B through 16 KiB, including bulk: 133 ns vs 213 ns at 1 KiB and 1.75 us vs
+2.33 us at 16 KiB, because the stitched loop keeps the AES and carryless-multiply
+pipelines busy at once rather than draining them in sequence. Key setup also
+beats ring (80 ns vs 87 ns for the caller-placed handle) even though the
+candidate additionally computes the GHASH key powers and zeroizes its key state
+on drop, which ring does not. Decryption deliberately trails ring on
 larger inputs (2.95 us vs 2.21 us at 16 KiB) because the candidate verifies the
 tag *before* writing any plaintext (two passes), while ring decrypts first and
 verifies after; we consider refusing to release unverified plaintext the right
@@ -109,11 +108,10 @@ crates runtime-detect AES-NI/PCLMULQDQ there by default.
   caller-buffer APIs. ring's in-place API gets its buffer from untimed
   Criterion setup, so `candidate-noalloc` is the apples-to-apples comparison
   with ring.
-- The candidate's drop path volatile-wipes key state; the timed per-record pattern
-  includes that wipe. The stock types do not wipe by default.
-- These are primitive microbenchmarks. Application-level integration benchmarking remains the gate, e.g.
-  `scripts/benchmark.sh --rust-only --memory` before/after integration, per
-  docs/design.md.
+- The candidate's drop path volatile-wipes key state; the key-setup timings
+  include that wipe. The stock types do not wipe by default.
+- These are primitive microbenchmarks; real workloads should be measured in the
+  consuming application before integration decisions.
 
 ## AES-256-GCM encrypt
 
@@ -130,7 +128,7 @@ crates runtime-detect AES-NI/PCLMULQDQ there by default.
 
 The candidate verifies the authentication tag before writing any plaintext
 (two passes); ring decrypts in place and verifies afterwards. `*-noalloc` is
-`decrypt_to` into a caller buffer (the per-record key-decryption path).
+`decrypt_to` into a caller buffer.
 
 | Size | candidate | candidate-noalloc | rustcrypto (default) | rustcrypto (armv8 cfgs) | ring |
 | --- | --- | --- | --- | --- | --- |
@@ -140,20 +138,6 @@ The candidate verifies the authentication tag before writing any plaintext
 | 1 KiB | 257.2 ns | 238.9 ns | 5.01 us | 570.2 ns | 165.1 ns |
 | 4 KiB | 836.8 ns | 786.7 ns | 19.19 us | 2.19 us | 555.2 ns |
 | 16 KiB | 3.14 us | 2.95 us | 75.96 us | 8.58 us | 2.21 us |
-
-## Per-record key pattern (key setup + encrypt 256 B + drop)
-
-The per-record hot path expands a fresh key, encrypts one payload, and
-releases the key state. Candidate rows include the zeroizing wipe on drop and
-GHASH key-power precomputation; the stock types do not wipe at all.
-
-| Implementation | Time |
-| --- | --- |
-| candidate (caller-placed slot) | 158 ns |
-| candidate (owned) | 167 ns |
-| ring | 188 ns |
-| rustcrypto (armv8 cfgs) | 320 ns |
-| rustcrypto (default) | 2.06 us |
 
 ## Key setup (expand 32-byte key to reusable state)
 

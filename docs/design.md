@@ -23,9 +23,9 @@ A consuming application typically needs only a narrow primitive surface:
 - 12-byte nonces.
 - 16-byte authentication tags.
 - Current wire layout: `ciphertext || tag || nonce`.
-- Empty AAD for compatibility with existing cross-language payloads.
-- Reusable per-key state for cached system, intermediate, and data keys.
-- Fast random bytes for keys, data nonces, and key generation.
+- Empty AAD by default; callers may supply AAD explicitly.
+- Reusable per-key state for cached keys.
+- Fast random bytes for keys, nonces, and key generation.
 - Caller-controlled storage for raw keys and expanded key-equivalent state.
 - Guaranteed zeroization of owned or caller-provided key-state storage.
 
@@ -282,7 +282,7 @@ crypto path:
   derived from clipped `rand_aes` code; it is the only generator shipped.
 - It implements the fallible `KeyGenerator` contract.
 - Seed material must be wiped after initialization.
-- `key_32` generates DRKs and AES-256 keys.
+- `key_32` generates AES-256 keys.
 - `nonce_12` generates AES-GCM nonces.
 - Backend state must be opaque, caller-placeable where needed, and zeroized on
   release/drop.
@@ -564,8 +564,8 @@ Random benchmark dimensions:
 
 Integration benchmark:
 
-- After the primitive is usable, wire it into a consumer branch and run
-  `scripts/benchmark.sh --rust-only --memory` before/after.
+- After the primitive is usable, wire it into a consumer branch and measure
+  end-to-end throughput and memory before/after.
 
 ## Implementation Phases
 
