@@ -1,0 +1,43 @@
+[package]
+name = "hardware-rust-crypto"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[workspace]
+members = [
+    "crates/hardware-aes-gcm",
+    "crates/hardware-random",
+]
+resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[dependencies]
+hardware-aes-gcm = { path = "crates/hardware-aes-gcm" }
+hardware-random = { path = "crates/hardware-random" }
+
+[dev-dependencies]
+aes-gcm = { version = "0.10", features = ["aes"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.9"
+rand_chacha = "0.9"
+ring = "0.17"
+
+[[bench]]
+name = "aes_gcm"
+harness = false
+
+[[bench]]
+name = "random"
+harness = false

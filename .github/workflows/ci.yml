@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            expected_arch: x86_64
+          - name: macos-aarch64
+            os: macos-14
+            expected_arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify runner architecture
+        run: |
+          actual="$(uname -m)"
+          if [ "$actual" != "${{ matrix.expected_arch }}" ]; then
+            echo "expected ${{ matrix.expected_arch }}, got $actual" >&2
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps

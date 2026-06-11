@@ -1,0 +1,10 @@
+[package]
+name = "hardware-aes-gcm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zeroize = "1.8"
+
+[lints]
+workspace = true
