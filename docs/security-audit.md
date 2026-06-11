@@ -10,7 +10,7 @@
 | --- | --- |
 | **Title** | Security Assessment of the `hardware-rust-crypto` AES-256-GCM and key-generation primitives |
 | **Target** | `hardware-rust-crypto` workspace - `hardware-aes-gcm`, `hardware-random` |
-| **Version reviewed** | git `9d7c52b` (branch `pr-1-review`, PR #1) |
+| **Version reviewed** | git `9177862` (branch `stitched-aes-gcm-encrypt`) |
 | **Assessment type** | Multi-model agentic cryptographic source review with differential, statistical, and assembly-level verification |
 | **Assessment date** | 2026-06-11 |
 | **Toolchain** | rustc 1.96.0; crate MSRV 1.88; edition 2021 |
