@@ -61,21 +61,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy (two-phase fallback)
-        run: cargo clippy -p hardware-aes-gcm --all-targets --no-default-features -- -D warnings
-
       - name: Test
         run: cargo test --workspace --all-targets
-
-      - name: Test (two-phase fallback)
-        run: |
-          cargo test -p hardware-aes-gcm --no-default-features
-          cargo test --test aes_gcm_interop --no-default-features
 
       - name: Release crypto tests
         run: |
           cargo test --release --test aes_gcm_interop
-          cargo test --release --test aes_gcm_interop --no-default-features
           cargo test --release -p hardware-random
 
       - name: Docs

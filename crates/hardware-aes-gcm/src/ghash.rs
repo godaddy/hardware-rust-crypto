@@ -114,7 +114,6 @@ impl Ghasher {
     /// absorbs AAD first, handles the sub-128-byte tail afterward, and then
     /// finalizes. `plaintext` and `ciphertext` must be equal length and a
     /// whole number of 128-byte batches.
-    #[cfg(feature = "stitched-encrypt")]
     pub(crate) fn seal_bulk(
         &mut self,
         round_keys: &crate::aes::RoundKeys,
@@ -262,9 +261,7 @@ mod imp {
         },
         mem,
     };
-    // Stitch-only AES round and byte-reverse intrinsics for the fused encrypt
-    // loop; absent from the two-phase fallback build.
-    #[cfg(feature = "stitched-encrypt")]
+    // AES round and byte-reverse intrinsics for the fused encrypt loop.
     use core::arch::aarch64::{vaeseq_u8, vaesmcq_u8, vrev64q_u8};
 
     pub(super) struct Backend {
@@ -385,7 +382,6 @@ mod imp {
             self.y = mont_reduce(h, l);
         }
 
-        #[cfg(feature = "stitched-encrypt")]
         pub(super) fn seal_bulk(
             &mut self,
             round_keys: &crate::aes::RoundKeys,
@@ -408,7 +404,6 @@ mod imp {
         /// Constant time: every instruction here (AESE/AESMC, PMULL/PMULL2,
         /// EOR, EXT, REV) has data-independent latency; the only control flow
         /// is the public batch count, and no memory index depends on a secret.
-        #[cfg(feature = "stitched-encrypt")]
         #[target_feature(enable = "aes", enable = "neon")]
         unsafe fn seal_bulk_inner(
             &mut self,
@@ -484,7 +479,6 @@ mod imp {
     /// Eight-block GHASH aggregation over inputs already resident in registers
     /// and in POLYVAL byte order. Mirrors `update_blocks8_inner` but avoids the
     /// memory round-trip so it can be stitched into the encrypt loop.
-    #[cfg(feature = "stitched-encrypt")]
     #[inline]
     #[target_feature(enable = "aes", enable = "neon")]
     unsafe fn ghash8_regs(
@@ -514,7 +508,6 @@ mod imp {
 
     /// Full 16-byte reversal of a vector (the GHASH-to-POLYVAL byte mapping)
     /// done in-register: reverse within each 64-bit half, then swap the halves.
-    #[cfg(feature = "stitched-encrypt")]
     #[inline]
     #[target_feature(enable = "aes", enable = "neon")]
     unsafe fn byte_reverse(x: uint8x16_t) -> uint8x16_t {
@@ -640,11 +633,10 @@ mod imp {
         __m128i, _mm_clmulepi64_si128, _mm_loadu_si128, _mm_setzero_si128, _mm_shuffle_epi32,
         _mm_slli_epi64, _mm_srli_epi64, _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128,
     };
-    // Stitch-only AES round and byte-shuffle intrinsics for the fused encrypt
-    // loop; absent from the two-phase fallback build.
-    #[cfg(all(feature = "stitched-encrypt", target_arch = "x86"))]
+    // AES round and byte-shuffle intrinsics for the fused encrypt loop.
+    #[cfg(target_arch = "x86")]
     use core::arch::x86::{_mm_aesenc_si128, _mm_aesenclast_si128, _mm_set_epi8, _mm_shuffle_epi8};
-    #[cfg(all(feature = "stitched-encrypt", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
         _mm_aesenc_si128, _mm_aesenclast_si128, _mm_set_epi8, _mm_shuffle_epi8,
     };
@@ -764,7 +756,6 @@ mod imp {
             self.y = reduce(t0, t1, t2);
         }
 
-        #[cfg(feature = "stitched-encrypt")]
         pub(super) fn seal_bulk(
             &mut self,
             round_keys: &crate::aes::RoundKeys,
@@ -788,7 +779,6 @@ mod imp {
         /// PCLMULQDQ, PXOR, PSHUFB) has data-independent latency; the only
         /// control flow is the public batch count, and no memory index depends
         /// on a secret.
-        #[cfg(feature = "stitched-encrypt")]
         #[target_feature(
             enable = "sse2",
             enable = "ssse3",
@@ -870,7 +860,6 @@ mod imp {
     /// Eight-block GHASH aggregation over inputs already resident in registers
     /// and in POLYVAL byte order. Mirrors `update_blocks8_inner` but avoids the
     /// memory round-trip so it can be stitched into the encrypt loop.
-    #[cfg(feature = "stitched-encrypt")]
     #[inline]
     #[target_feature(enable = "sse2", enable = "pclmulqdq")]
     unsafe fn ghash8_regs(
@@ -936,6 +925,7 @@ mod imp {
     pub(super) fn hardware_available() -> bool {
         std::arch::is_x86_feature_detected!("sse2")
             && std::arch::is_x86_feature_detected!("pclmulqdq")
+            && std::arch::is_x86_feature_detected!("ssse3")
     }
 
     /// Schoolbook + Karatsuba wide carryless product of `x` and `h` as the
@@ -1036,7 +1026,6 @@ mod imp {
             match *self {}
         }
 
-        #[cfg(feature = "stitched-encrypt")]
         pub(super) fn seal_bulk(
             &mut self,
             _round_keys: &crate::aes::RoundKeys,

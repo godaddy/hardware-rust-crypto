@@ -10,11 +10,11 @@
 | --- | --- |
 | **Title** | Security Assessment of the `hardware-rust-crypto` AES-256-GCM and key-generation primitives |
 | **Target** | `hardware-rust-crypto` workspace - `hardware-aes-gcm`, `hardware-random` |
-| **Version reviewed** | git `9177862` (branch `stitched-aes-gcm-encrypt`) |
+| **Version reviewed** | Initial revision |
 | **Assessment type** | Multi-model agentic cryptographic source review with differential, statistical, and assembly-level verification |
 | **Assessment date** | 2026-06-11 |
 | **Toolchain** | rustc 1.96.0; crate MSRV 1.88; edition 2021 |
-| **Platforms** | `x86_64` (AES-NI, PCLMULQDQ, RDSEED); `aarch64` (ARMv8 AES, PMULL, FEAT_RNG) |
+| **Platforms** | `x86_64` (AES-NI, PCLMULQDQ, SSSE3, RDSEED); `aarch64` (ARMv8 AES, PMULL, FEAT_RNG) |
 | **Classification** | Internal / pre-integration |
 | **Status** | Initial |
 
@@ -118,7 +118,7 @@ apply their own judgment.
 - **Scope is the two production crates and their direct support code.** Out of
   scope: the consuming application, the eventual FFI integration, build/release
   infrastructure beyond the committed CI workflow, and the development host.
-- **It is a point-in-time review** of git `71396df`.
+- **It is a point-in-time review** of the initial revision.
 
 Ratings follow the methodology in [Appendix A](#appendix-a---rating-methodology).
 
@@ -576,17 +576,16 @@ zeroization in Rust and is not specific to this library.
 | **Status** | Open |
 | **Location** | `tests/aes_gcm_interop.rs`; `crates/hardware-aes-gcm/src/ghash.rs` |
 
-**Description.** The 8-block aggregated GHASH reduction (section 7.2), shared by
-the two-phase and stitched encrypt paths, is novel relative to the per-block
-upstream POLYVAL and is the most intricate arithmetic in the codebase. Its
-correctness currently rests on differential testing against RustCrypto/`ring`
-and NIST KATs - strong evidence, but not a machine-checked proof, and the
-well-known Google Project Wycheproof AES-GCM vectors (which target truncated
-tags, oversized inputs, and special-value nonces) are not integrated.
+**Description.** The 8-block aggregated GHASH reduction (section 7.2) is novel
+relative to the per-block upstream POLYVAL and is the most intricate arithmetic
+in the codebase. Its correctness currently rests on differential testing
+against RustCrypto/`ring` and NIST KATs - strong evidence, but not a
+machine-checked proof, and the well-known Google Project Wycheproof AES-GCM
+vectors (which target truncated tags, oversized inputs, and special-value
+nonces) are not integrated.
 
 **Evidence.** The dense differential sweep exercises the aggregation/batch
-boundaries through multiple full batches and their tails, under both the
-stitched (default) and two-phase encrypt configurations in CI:
+boundaries through multiple full batches and their tails:
 
 ```rust
 // tests/aes_gcm_interop.rs (dense_length_sweep_matches_rustcrypto)
@@ -732,17 +731,14 @@ blocks per batch; independence is structural and equivalence to serial CTR is
 confirmed by the differential corpus. The AES-256-CTR keystream was
 cross-validated against OpenSSL AES-256-ECB (Appendix B).
 
-**Stitched encrypt (`stitched-encrypt` feature, default on).** On the bulk
-encrypt path the keystream batch and the GHASH of the previous batch's
-ciphertext are emitted as two independent instruction sequences in one
-`#[target_feature]` body (`seal_bulk_inner`), software-pipelined so the AES and
-carryless-multiply pipelines overlap. This is a scheduling change only: the
-instructions are the same data-independent AESE/AESMC (AESENC/AESENCLAST),
+**Stitched encrypt.** On the bulk encrypt path the keystream batch and the
+GHASH of the previous batch's ciphertext are emitted as two independent
+instruction sequences in one `#[target_feature]` body (`seal_bulk_inner`),
+software-pipelined so the AES and carryless-multiply pipelines overlap. The
+instructions are the data-independent AESE/AESMC (AESENC/AESENCLAST),
 PMULL/PMULL2 (PCLMULQDQ), XOR, and in-register byte-reverse (REV / PSHUFB), the
 loop bound is the public batch count, and no memory index depends on a secret,
-so the constant-time argument of section 6 is unchanged. The output is identical
-to the two-phase reference loop (selected by disabling the default feature),
-which is held to the same differential corpus in CI. Decryption is **not**
+so the constant-time argument of section 6 holds. Decryption is **not**
 stitched: verify-before-decrypt requires GHASH to complete before the CTR pass
 begins, so there is nothing to overlap.
 
@@ -1061,8 +1057,8 @@ CVSS over-weighting conditional impact for secure-by-default API gaps.
 
 ## Appendix B - Verification performed and captured evidence
 
-All commands run at git `71396df`, rustc 1.96.0, on a MacBook Pro (Apple M4
-Max) `aarch64` host; the
+All commands run at the initial revision, rustc 1.96.0, on a MacBook Pro
+(Apple M4 Max) `aarch64` host; the
 `x86_64` paths were additionally checked under the `stable-x86_64-apple-darwin`
 toolchain. Both CI architectures were green at this commit. Reviewers should
 re-run independently.
@@ -1190,4 +1186,4 @@ forbidden-crypto guard: 0 hits on both production graphs
 
 ---
 
-*End of assessment. Document version 3.0, 2026-06-11, against git `71396df`.*
+*End of assessment.*

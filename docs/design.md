@@ -66,12 +66,11 @@ Current implementation:
   `x86_64`/AES-NI/PCLMULQDQ and `aarch64`/AES/PMULL.
 - CTR runs eight interleaved block chains; GHASH folds eight blocks per field
   reduction using precomputed Montgomery key powers (`H^1..H^8`, 128 bytes of
-  key state). The default `stitched-encrypt` path fuses the keystream and the
-  previous batch's GHASH into one software-pipelined loop so the AES and
-  carryless-multiply pipelines overlap; encryption authenticates each ciphertext
-  chunk as it is produced (single pass). Disabling the feature selects an
-  equivalent two-phase reference loop. Decryption stays two-pass by policy: the
-  tag is verified before any plaintext is written.
+  key state). The encrypt path fuses the keystream and the previous batch's
+  GHASH into one software-pipelined loop so the AES and carryless-multiply
+  pipelines overlap; encryption authenticates each ciphertext chunk as it is
+  produced (single pass). Decryption stays two-pass by policy: the tag is
+  verified before any plaintext is written.
 - `hardware-aes-gcm` exposes owned and caller-placed key-state APIs, plus
   allocation-free `encrypt_to`/`decrypt_to` caller-buffer variants.
 - `hardware-random` ships a hardware-only AES-256-CTR-128 key generator

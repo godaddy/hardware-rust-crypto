@@ -31,7 +31,6 @@ pub(crate) const PAR_BLOCKS: usize = 8;
 /// as native vector registers). Exposed crate-internally so the stitched
 /// GCM encrypt loop can interleave AES rounds with GHASH multiplies in one
 /// `#[target_feature]` body.
-#[cfg(feature = "stitched-encrypt")]
 pub(crate) use imp::RoundKeys;
 
 /// Hardware-only AES-256 encryption state.
@@ -48,7 +47,6 @@ impl Aes256 {
     }
 
     /// Borrows the expanded round keys for the stitched encrypt path.
-    #[cfg(feature = "stitched-encrypt")]
     pub(crate) fn round_keys(&self) -> &RoundKeys {
         self.0.round_keys()
     }
@@ -107,7 +105,6 @@ mod imp {
     const AES256_ROUND_KEY_COUNT: usize = 15;
     const AES_RCON: [u32; 7] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40];
 
-    #[cfg(feature = "stitched-encrypt")]
     pub(crate) type RoundKeys = [uint8x16_t; AES256_ROUND_KEY_COUNT];
 
     pub(super) struct Aes256 {
@@ -115,7 +112,6 @@ mod imp {
     }
 
     impl Aes256 {
-        #[cfg(feature = "stitched-encrypt")]
         pub(crate) fn round_keys(&self) -> &RoundKeys {
             &self.round_keys
         }
@@ -310,7 +306,6 @@ mod imp {
 
     const AES256_ROUND_KEY_COUNT: usize = 15;
 
-    #[cfg(feature = "stitched-encrypt")]
     pub(crate) type RoundKeys = [__m128i; AES256_ROUND_KEY_COUNT];
 
     pub(super) struct Aes256 {
@@ -318,7 +313,6 @@ mod imp {
     }
 
     impl Aes256 {
-        #[cfg(feature = "stitched-encrypt")]
         pub(crate) fn round_keys(&self) -> &RoundKeys {
             &self.round_keys
         }
@@ -478,13 +472,11 @@ mod imp {
 mod imp {
     /// Placeholder round-key array on targets without a hardware backend.
     /// Never constructed at runtime (`hardware_available` is false).
-    #[cfg(feature = "stitched-encrypt")]
     pub(crate) type RoundKeys = [[u8; 16]; 15];
 
     pub(super) enum Aes256 {}
 
     impl Aes256 {
-        #[cfg(feature = "stitched-encrypt")]
         pub(crate) fn round_keys(&self) -> &RoundKeys {
             match *self {}
         }
