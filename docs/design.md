@@ -64,11 +64,14 @@ Current implementation:
 
 - `hardware-aes-gcm` uses vendored hardware-only AES-256 and GHASH paths for
   `x86_64`/AES-NI/PCLMULQDQ and `aarch64`/AES/PMULL.
-- CTR runs eight interleaved block chains; GHASH folds four blocks per field
-  reduction using precomputed Montgomery key powers (`H^1..H^4`, 64 bytes of
-  key state); encryption authenticates each ciphertext chunk as it is
-  produced (single pass). Decryption stays two-pass by policy: the tag is
-  verified before any plaintext is written.
+- CTR runs eight interleaved block chains; GHASH folds eight blocks per field
+  reduction using precomputed Montgomery key powers (`H^1..H^8`, 128 bytes of
+  key state). The default `stitched-encrypt` path fuses the keystream and the
+  previous batch's GHASH into one software-pipelined loop so the AES and
+  carryless-multiply pipelines overlap; encryption authenticates each ciphertext
+  chunk as it is produced (single pass). Disabling the feature selects an
+  equivalent two-phase reference loop. Decryption stays two-pass by policy: the
+  tag is verified before any plaintext is written.
 - `hardware-aes-gcm` exposes owned and caller-placed key-state APIs, plus
   allocation-free `encrypt_to`/`decrypt_to` caller-buffer variants.
 - `hardware-random` ships a hardware-only AES-256-CTR-128 key generator
@@ -509,7 +512,7 @@ below the point-collision rate of independent random nonces. The base is
 re-drawn on fork via the same `pthread_atfork` generation counter used by
 `hardware-random`, so a forked child never repeats its parent's nonces. The
 generator state lives on the handle, not in the placed key state, so the
-304-byte key-state footprint is unchanged. This is plain AES-GCM (no
+368-byte key-state footprint is unchanged. This is plain AES-GCM (no
 AES-GCM-SIV): it *prevents* reuse rather than *surviving* it; SIV remains the
 option for call sites that cannot guarantee unique nonces at all.
 

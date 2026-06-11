@@ -172,7 +172,9 @@ fn randomized_differential_against_rustcrypto() {
 #[test]
 fn dense_length_sweep_matches_rustcrypto() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x424f_554e_4441_5259);
-    let lengths = (0..=288_usize).chain([511, 512, 513, 1023, 1024, 1025, 4095, 4096, 4097]);
+    let lengths = (0..=288_usize).chain([
+        511, 512, 513, 1023, 1024, 1025, 4095, 4096, 4097, 8191, 8192, 8193, 16383, 16384, 16385,
+    ]);
     for plaintext_len in lengths {
         for aad_len in [0_usize, 17] {
             let mut key = [0_u8; 32];

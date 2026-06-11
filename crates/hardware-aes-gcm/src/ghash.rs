@@ -5,9 +5,10 @@
 //! Project Developers; see the repository `NOTICE` file for full
 //! attribution), without the software fallback or autodetect enum. On top of
 //! the vendored single-block multiply it adds the standard aggregated
-//! reduction: four precomputed Montgomery-form key powers let four blocks be
+//! reduction: eight precomputed Montgomery-form key powers let eight blocks be
 //! folded with one field reduction (the wide carryless products are XOR-linear,
-//! so they are summed before a single reduction).
+//! so they are summed before a single reduction), with four- and one-block
+//! reductions for the sub-batch tail.
 //!
 //! # Constant-time notes
 //!
@@ -27,10 +28,12 @@ use core::ptr;
 use zeroize::Zeroize as _;
 
 /// Number of precomputed Montgomery-form key powers held in the key state.
-const KEY_POWERS: usize = 4;
+/// Eight powers let a full eight-block batch fold with one field reduction,
+/// matching the stitched encrypt batch width.
+const KEY_POWERS: usize = 8;
 
 /// Reusable GHASH key material: POLYVAL-domain Montgomery powers
-/// `[H^1, H^2, H^3, H^4]`.
+/// `[H^1, H^2, ..., H^8]`.
 pub(crate) struct GHashKey {
     polyval_key_powers: [[u8; 16]; KEY_POWERS],
 }
@@ -54,13 +57,27 @@ impl GHashKey {
         let mut h3 = unsafe { imp::mul(&h2, &h1) };
         // SAFETY: as above.
         let mut h4 = unsafe { imp::mul(&h2, &h2) };
+        // SAFETY: as above.
+        let mut h5 = unsafe { imp::mul(&h4, &h1) };
+        // SAFETY: as above.
+        let mut h6 = unsafe { imp::mul(&h4, &h2) };
+        // SAFETY: as above.
+        let mut h7 = unsafe { imp::mul(&h4, &h3) };
+        // SAFETY: as above.
+        let mut h8 = unsafe { imp::mul(&h4, &h4) };
         // SAFETY: caller provides valid writable storage for Self and the field
         // pointer stays within that allocation.
-        unsafe { ptr::addr_of_mut!((*dst).polyval_key_powers).write([h1, h2, h3, h4]) };
+        unsafe {
+            ptr::addr_of_mut!((*dst).polyval_key_powers).write([h1, h2, h3, h4, h5, h6, h7, h8]);
+        }
         h1.zeroize();
         h2.zeroize();
         h3.zeroize();
         h4.zeroize();
+        h5.zeroize();
+        h6.zeroize();
+        h7.zeroize();
+        h8.zeroize();
         Some(())
     }
 
@@ -92,7 +109,25 @@ impl Ghasher {
         })
     }
 
-    /// Absorbs a 16-byte-multiple run of bytes, four blocks per reduction.
+    /// Stitched CTR-encrypt + GHASH over the eight-block-aligned bulk region,
+    /// advancing the GHASH accumulator and the CTR `counter`. The caller
+    /// absorbs AAD first, handles the sub-128-byte tail afterward, and then
+    /// finalizes. `plaintext` and `ciphertext` must be equal length and a
+    /// whole number of 128-byte batches.
+    #[cfg(feature = "stitched-encrypt")]
+    pub(crate) fn seal_bulk(
+        &mut self,
+        round_keys: &crate::aes::RoundKeys,
+        counter: &mut [u8; 16],
+        plaintext: &[u8],
+        ciphertext: &mut [u8],
+    ) {
+        self.backend
+            .seal_bulk(round_keys, counter, plaintext, ciphertext);
+    }
+
+    /// Absorbs a 16-byte-multiple run of bytes, eight blocks per reduction
+    /// where possible, then four, then one.
     ///
     /// Callers stream section bytes through this in block-aligned chunks and
     /// close the section with [`Self::absorb_padded`] for any partial tail.
@@ -102,9 +137,19 @@ impl Ghasher {
             "absorb_blocks needs whole blocks"
         );
 
-        let mut quads = data.chunks_exact(64);
+        let mut octets = data.chunks_exact(128);
+        for octet in &mut octets {
+            let mut blocks = [[0_u8; 16]; 8];
+            for (block, chunk) in blocks.iter_mut().zip(octet.chunks_exact(16)) {
+                block.copy_from_slice(chunk);
+                block.reverse();
+            }
+            self.backend.update_blocks8(&blocks);
+        }
+
+        let mut quads = octets.remainder().chunks_exact(64);
         for quad in &mut quads {
-            let mut blocks = [[0_u8; 16]; KEY_POWERS];
+            let mut blocks = [[0_u8; 16]; 4];
             for (block, chunk) in blocks.iter_mut().zip(quad.chunks_exact(16)) {
                 block.copy_from_slice(chunk);
                 block.reverse();
@@ -217,9 +262,13 @@ mod imp {
         },
         mem,
     };
+    // Stitch-only AES round and byte-reverse intrinsics for the fused encrypt
+    // loop; absent from the two-phase fallback build.
+    #[cfg(feature = "stitched-encrypt")]
+    use core::arch::aarch64::{vaeseq_u8, vaesmcq_u8, vrev64q_u8};
 
     pub(super) struct Backend {
-        /// Montgomery-form key powers `[H^1, H^2, H^3, H^4]`.
+        /// Montgomery-form key powers `[H^1, H^2, ..., H^8]`.
         h_pows: [uint8x16_t; super::KEY_POWERS],
         y: uint8x16_t,
     }
@@ -241,10 +290,16 @@ mod imp {
             unsafe { self.update_block_inner(block) };
         }
 
-        pub(super) fn update_blocks4(&mut self, blocks: &[[u8; 16]; super::KEY_POWERS]) {
+        pub(super) fn update_blocks4(&mut self, blocks: &[[u8; 16]; 4]) {
             // SAFETY: Backend can only be constructed after hardware_available
             // has checked the target features required by the inner method.
             unsafe { self.update_blocks4_inner(blocks) };
+        }
+
+        pub(super) fn update_blocks8(&mut self, blocks: &[[u8; 16]; super::KEY_POWERS]) {
+            // SAFETY: Backend can only be constructed after hardware_available
+            // has checked the target features required by the inner method.
+            unsafe { self.update_blocks8_inner(blocks) };
         }
 
         pub(super) fn finalize(self) -> [u8; 16] {
@@ -281,7 +336,7 @@ mod imp {
         /// Valid because the reduction is linear over XOR of the wide
         /// carryless products.
         #[target_feature(enable = "aes", enable = "neon")]
-        unsafe fn update_blocks4_inner(&mut self, blocks: &[[u8; 16]; super::KEY_POWERS]) {
+        unsafe fn update_blocks4_inner(&mut self, blocks: &[[u8; 16]; 4]) {
             // SAFETY: each block is a valid 16-byte initialized buffer.
             let x0 = veorq_u8(self.y, unsafe { vld1q_u8(blocks[0].as_ptr()) });
             let (mut h, mut m, mut l) = karatsuba1(self.h_pows[3], x0);
@@ -298,6 +353,173 @@ mod imp {
             let (h, l) = karatsuba2(h, m, l);
             self.y = mont_reduce(h, l);
         }
+
+        /// Folds eight blocks with one Montgomery reduction:
+        /// `y' = reduce(K(y^x1, H^8) ^ K(x2, H^7) ^ ... ^ K(x8, H^1))`.
+        /// Valid because the reduction is linear over XOR of the wide
+        /// carryless products.
+        #[target_feature(enable = "aes", enable = "neon")]
+        unsafe fn update_blocks8_inner(&mut self, blocks: &[[u8; 16]; 8]) {
+            // SAFETY: each block is a valid 16-byte initialized buffer.
+            let x0 = veorq_u8(self.y, unsafe { vld1q_u8(blocks[0].as_ptr()) });
+            let (mut h, mut m, mut l) = karatsuba1(self.h_pows[7], x0);
+
+            for (power_index, block) in [
+                (6_usize, 1_usize),
+                (5, 2),
+                (4, 3),
+                (3, 4),
+                (2, 5),
+                (1, 6),
+                (0, 7),
+            ] {
+                // SAFETY: each block is a valid 16-byte initialized buffer.
+                let x = unsafe { vld1q_u8(blocks[block].as_ptr()) };
+                let (hh, mm, ll) = karatsuba1(self.h_pows[power_index], x);
+                h = veorq_u8(h, hh);
+                m = veorq_u8(m, mm);
+                l = veorq_u8(l, ll);
+            }
+
+            let (h, l) = karatsuba2(h, m, l);
+            self.y = mont_reduce(h, l);
+        }
+
+        #[cfg(feature = "stitched-encrypt")]
+        pub(super) fn seal_bulk(
+            &mut self,
+            round_keys: &crate::aes::RoundKeys,
+            counter: &mut [u8; 16],
+            plaintext: &[u8],
+            ciphertext: &mut [u8],
+        ) {
+            // SAFETY: Backend can only be constructed after hardware_available
+            // has checked the aes/neon/pmull features the inner method needs;
+            // the AES round keys it borrows were built under the same check.
+            unsafe { self.seal_bulk_inner(round_keys, counter, plaintext, ciphertext) };
+        }
+
+        /// Stitched CTR-encrypt + GHASH over the eight-block-aligned bulk
+        /// region. The current batch's eight interleaved AES chains and the
+        /// previous batch's eight-block GHASH are emitted as two independent
+        /// instruction sequences in one body, so the scheduler overlaps the
+        /// AES and PMULL pipelines instead of draining them in sequence.
+        ///
+        /// Constant time: every instruction here (AESE/AESMC, PMULL/PMULL2,
+        /// EOR, EXT, REV) has data-independent latency; the only control flow
+        /// is the public batch count, and no memory index depends on a secret.
+        #[cfg(feature = "stitched-encrypt")]
+        #[target_feature(enable = "aes", enable = "neon")]
+        unsafe fn seal_bulk_inner(
+            &mut self,
+            round_keys: &crate::aes::RoundKeys,
+            counter: &mut [u8; 16],
+            plaintext: &[u8],
+            ciphertext: &mut [u8],
+        ) {
+            debug_assert_eq!(plaintext.len(), ciphertext.len());
+            debug_assert!(plaintext.len().is_multiple_of(128));
+
+            let batches = plaintext.len() / 128;
+            if batches == 0 {
+                return;
+            }
+
+            let mut y = self.y;
+            // Byte-reversed (POLYVAL-domain) ciphertext of the previous batch,
+            // GHASHed one iteration later so it overlaps the next AES batch.
+            let mut prev = [vdupq_n_u8(0); 8];
+            let mut have_prev = false;
+
+            for batch in 0..batches {
+                // Build eight counter blocks (public counter arithmetic).
+                let mut ctr = [[0_u8; 16]; 8];
+                for block in &mut ctr {
+                    *block = *counter;
+                    crate::increment_counter(counter);
+                }
+
+                // Eight interleaved AES-256 chains -> keystream.
+                let mut state = [vdupq_n_u8(0); 8];
+                for (lane, block) in state.iter_mut().zip(ctr.iter()) {
+                    // SAFETY: each counter block is a valid 16-byte buffer.
+                    *lane = unsafe { vld1q_u8(block.as_ptr()) };
+                }
+                for round_key in &round_keys[..13] {
+                    for lane in &mut state {
+                        *lane = vaesmcq_u8(vaeseq_u8(*lane, *round_key));
+                    }
+                }
+                for lane in &mut state {
+                    *lane = veorq_u8(vaeseq_u8(*lane, round_keys[13]), round_keys[14]);
+                }
+
+                // GHASH the previous batch while this batch's AES is in flight.
+                if have_prev {
+                    y = ghash8_regs(y, &self.h_pows, &prev);
+                }
+
+                // Fuse: load plaintext, XOR keystream, store ciphertext once;
+                // keep a byte-reversed copy for the next iteration's GHASH.
+                let base = batch * 128;
+                let pt = &plaintext[base..base + 128];
+                let ct = &mut ciphertext[base..base + 128];
+                for i in 0..8 {
+                    // SAFETY: pt/ct are 128-byte windows; i*16 stays in bounds.
+                    let p = unsafe { vld1q_u8(pt[i * 16..].as_ptr()) };
+                    let c = veorq_u8(state[i], p);
+                    // SAFETY: as above, writable 16-byte lane.
+                    unsafe { vst1q_u8(ct[i * 16..].as_mut_ptr(), c) };
+                    prev[i] = byte_reverse(c);
+                }
+                have_prev = true;
+            }
+
+            // Epilogue: fold the final batch.
+            y = ghash8_regs(y, &self.h_pows, &prev);
+            self.y = y;
+        }
+    }
+
+    /// Eight-block GHASH aggregation over inputs already resident in registers
+    /// and in POLYVAL byte order. Mirrors `update_blocks8_inner` but avoids the
+    /// memory round-trip so it can be stitched into the encrypt loop.
+    #[cfg(feature = "stitched-encrypt")]
+    #[inline]
+    #[target_feature(enable = "aes", enable = "neon")]
+    unsafe fn ghash8_regs(
+        y: uint8x16_t,
+        h_pows: &[uint8x16_t; super::KEY_POWERS],
+        blocks: &[uint8x16_t; 8],
+    ) -> uint8x16_t {
+        let x0 = veorq_u8(y, blocks[0]);
+        let (mut h, mut m, mut l) = karatsuba1(h_pows[7], x0);
+        for (power_index, block) in [
+            (6_usize, 1_usize),
+            (5, 2),
+            (4, 3),
+            (3, 4),
+            (2, 5),
+            (1, 6),
+            (0, 7),
+        ] {
+            let (hh, mm, ll) = karatsuba1(h_pows[power_index], blocks[block]);
+            h = veorq_u8(h, hh);
+            m = veorq_u8(m, mm);
+            l = veorq_u8(l, ll);
+        }
+        let (h, l) = karatsuba2(h, m, l);
+        mont_reduce(h, l)
+    }
+
+    /// Full 16-byte reversal of a vector (the GHASH-to-POLYVAL byte mapping)
+    /// done in-register: reverse within each 64-bit half, then swap the halves.
+    #[cfg(feature = "stitched-encrypt")]
+    #[inline]
+    #[target_feature(enable = "aes", enable = "neon")]
+    unsafe fn byte_reverse(x: uint8x16_t) -> uint8x16_t {
+        let halves = vrev64q_u8(x);
+        vextq_u8(halves, halves, 8)
     }
 
     impl Drop for Backend {
@@ -418,9 +640,17 @@ mod imp {
         __m128i, _mm_clmulepi64_si128, _mm_loadu_si128, _mm_setzero_si128, _mm_shuffle_epi32,
         _mm_slli_epi64, _mm_srli_epi64, _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128,
     };
+    // Stitch-only AES round and byte-shuffle intrinsics for the fused encrypt
+    // loop; absent from the two-phase fallback build.
+    #[cfg(all(feature = "stitched-encrypt", target_arch = "x86"))]
+    use core::arch::x86::{_mm_aesenc_si128, _mm_aesenclast_si128, _mm_set_epi8, _mm_shuffle_epi8};
+    #[cfg(all(feature = "stitched-encrypt", target_arch = "x86_64"))]
+    use core::arch::x86_64::{
+        _mm_aesenc_si128, _mm_aesenclast_si128, _mm_set_epi8, _mm_shuffle_epi8,
+    };
 
     pub(super) struct Backend {
-        /// Montgomery-form key powers `[H^1, H^2, H^3, H^4]`.
+        /// Montgomery-form key powers `[H^1, H^2, ..., H^8]`.
         h_pows: [__m128i; super::KEY_POWERS],
         y: __m128i,
     }
@@ -442,10 +672,16 @@ mod imp {
             unsafe { self.update_block_inner(block) };
         }
 
-        pub(super) fn update_blocks4(&mut self, blocks: &[[u8; 16]; super::KEY_POWERS]) {
+        pub(super) fn update_blocks4(&mut self, blocks: &[[u8; 16]; 4]) {
             // SAFETY: Backend can only be constructed after hardware_available
             // has checked the target features required by the inner method.
             unsafe { self.update_blocks4_inner(blocks) };
+        }
+
+        pub(super) fn update_blocks8(&mut self, blocks: &[[u8; 16]; super::KEY_POWERS]) {
+            // SAFETY: Backend can only be constructed after hardware_available
+            // has checked the target features required by the inner method.
+            unsafe { self.update_blocks8_inner(blocks) };
         }
 
         pub(super) fn finalize(self) -> [u8; 16] {
@@ -481,7 +717,7 @@ mod imp {
         /// where `W` is the wide carryless product. Valid because the
         /// reduction is linear over XOR of the wide products.
         #[target_feature(enable = "sse2", enable = "pclmulqdq")]
-        unsafe fn update_blocks4_inner(&mut self, blocks: &[[u8; 16]; super::KEY_POWERS]) {
+        unsafe fn update_blocks4_inner(&mut self, blocks: &[[u8; 16]; 4]) {
             // SAFETY: each block points to an initialized 16-byte range.
             let x0 = unsafe { _mm_loadu_si128(blocks[0].as_ptr().cast()) };
             let (mut t0, mut t1, mut t2) = clmul_wide(_mm_xor_si128(self.y, x0), self.h_pows[3]);
@@ -497,6 +733,167 @@ mod imp {
 
             self.y = reduce(t0, t1, t2);
         }
+
+        /// Folds eight blocks with one reduction:
+        /// `y' = reduce(W(y^x1, H^8) ^ W(x2, H^7) ^ ... ^ W(x8, H^1))`,
+        /// where `W` is the wide carryless product. Valid because the
+        /// reduction is linear over XOR of the wide products.
+        #[target_feature(enable = "sse2", enable = "pclmulqdq")]
+        unsafe fn update_blocks8_inner(&mut self, blocks: &[[u8; 16]; 8]) {
+            // SAFETY: each block points to an initialized 16-byte range.
+            let x0 = unsafe { _mm_loadu_si128(blocks[0].as_ptr().cast()) };
+            let (mut t0, mut t1, mut t2) = clmul_wide(_mm_xor_si128(self.y, x0), self.h_pows[7]);
+
+            for (power_index, block) in [
+                (6_usize, 1_usize),
+                (5, 2),
+                (4, 3),
+                (3, 4),
+                (2, 5),
+                (1, 6),
+                (0, 7),
+            ] {
+                // SAFETY: each block points to an initialized 16-byte range.
+                let x = unsafe { _mm_loadu_si128(blocks[block].as_ptr().cast()) };
+                let (u0, u1, u2) = clmul_wide(x, self.h_pows[power_index]);
+                t0 = _mm_xor_si128(t0, u0);
+                t1 = _mm_xor_si128(t1, u1);
+                t2 = _mm_xor_si128(t2, u2);
+            }
+
+            self.y = reduce(t0, t1, t2);
+        }
+
+        #[cfg(feature = "stitched-encrypt")]
+        pub(super) fn seal_bulk(
+            &mut self,
+            round_keys: &crate::aes::RoundKeys,
+            counter: &mut [u8; 16],
+            plaintext: &[u8],
+            ciphertext: &mut [u8],
+        ) {
+            // SAFETY: Backend can only be constructed after hardware_available
+            // has checked the sse2/pclmulqdq/ssse3 features; the AES round keys
+            // it borrows were built under an aes-feature check.
+            unsafe { self.seal_bulk_inner(round_keys, counter, plaintext, ciphertext) };
+        }
+
+        /// Stitched CTR-encrypt + GHASH over the eight-block-aligned bulk
+        /// region. The current batch's eight interleaved AES chains and the
+        /// previous batch's eight-block GHASH are emitted as two independent
+        /// instruction sequences in one body, so the scheduler overlaps the
+        /// AES and PCLMULQDQ pipelines instead of draining them in sequence.
+        ///
+        /// Constant time: every instruction here (AESENC/AESENCLAST,
+        /// PCLMULQDQ, PXOR, PSHUFB) has data-independent latency; the only
+        /// control flow is the public batch count, and no memory index depends
+        /// on a secret.
+        #[cfg(feature = "stitched-encrypt")]
+        #[target_feature(
+            enable = "sse2",
+            enable = "ssse3",
+            enable = "aes",
+            enable = "pclmulqdq"
+        )]
+        unsafe fn seal_bulk_inner(
+            &mut self,
+            round_keys: &crate::aes::RoundKeys,
+            counter: &mut [u8; 16],
+            plaintext: &[u8],
+            ciphertext: &mut [u8],
+        ) {
+            debug_assert_eq!(plaintext.len(), ciphertext.len());
+            debug_assert!(plaintext.len().is_multiple_of(128));
+
+            let batches = plaintext.len() / 128;
+            if batches == 0 {
+                return;
+            }
+
+            // PSHUFB mask reversing all 16 bytes: result byte i = input 15 - i.
+            let bswap = _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+            let mut y = self.y;
+            let mut prev = [_mm_setzero_si128(); 8];
+            let mut have_prev = false;
+
+            for batch in 0..batches {
+                // Build eight counter blocks (public counter arithmetic).
+                let mut ctr = [[0_u8; 16]; 8];
+                for block in &mut ctr {
+                    *block = *counter;
+                    crate::increment_counter(counter);
+                }
+
+                // Eight interleaved AES-256 chains -> keystream.
+                let mut state = [_mm_setzero_si128(); 8];
+                for (lane, block) in state.iter_mut().zip(ctr.iter()) {
+                    // SAFETY: each counter block is a valid 16-byte buffer.
+                    let input = unsafe { _mm_loadu_si128(block.as_ptr().cast()) };
+                    *lane = _mm_xor_si128(input, round_keys[0]);
+                }
+                for round_key in &round_keys[1..14] {
+                    for lane in &mut state {
+                        *lane = _mm_aesenc_si128(*lane, *round_key);
+                    }
+                }
+                for lane in &mut state {
+                    *lane = _mm_aesenclast_si128(*lane, round_keys[14]);
+                }
+
+                // GHASH the previous batch while this batch's AES is in flight.
+                if have_prev {
+                    y = ghash8_regs(y, &self.h_pows, &prev);
+                }
+
+                // Fuse: load plaintext, XOR keystream, store ciphertext once;
+                // keep a byte-reversed copy for the next iteration's GHASH.
+                let base = batch * 128;
+                let pt = &plaintext[base..base + 128];
+                let ct = &mut ciphertext[base..base + 128];
+                for i in 0..8 {
+                    // SAFETY: pt/ct are 128-byte windows; i*16 stays in bounds.
+                    let p = unsafe { _mm_loadu_si128(pt[i * 16..].as_ptr().cast()) };
+                    let c = _mm_xor_si128(state[i], p);
+                    // SAFETY: as above, writable 16-byte lane.
+                    unsafe { _mm_storeu_si128(ct[i * 16..].as_mut_ptr().cast(), c) };
+                    prev[i] = _mm_shuffle_epi8(c, bswap);
+                }
+                have_prev = true;
+            }
+
+            // Epilogue: fold the final batch.
+            y = ghash8_regs(y, &self.h_pows, &prev);
+            self.y = y;
+        }
+    }
+
+    /// Eight-block GHASH aggregation over inputs already resident in registers
+    /// and in POLYVAL byte order. Mirrors `update_blocks8_inner` but avoids the
+    /// memory round-trip so it can be stitched into the encrypt loop.
+    #[cfg(feature = "stitched-encrypt")]
+    #[inline]
+    #[target_feature(enable = "sse2", enable = "pclmulqdq")]
+    unsafe fn ghash8_regs(
+        y: __m128i,
+        h_pows: &[__m128i; super::KEY_POWERS],
+        blocks: &[__m128i; 8],
+    ) -> __m128i {
+        let (mut t0, mut t1, mut t2) = clmul_wide(_mm_xor_si128(y, blocks[0]), h_pows[7]);
+        for (power_index, block) in [
+            (6_usize, 1_usize),
+            (5, 2),
+            (4, 3),
+            (3, 4),
+            (2, 5),
+            (1, 6),
+            (0, 7),
+        ] {
+            let (u0, u1, u2) = clmul_wide(blocks[block], h_pows[power_index]);
+            t0 = _mm_xor_si128(t0, u0);
+            t1 = _mm_xor_si128(t1, u1);
+            t2 = _mm_xor_si128(t2, u2);
+        }
+        reduce(t0, t1, t2)
     }
 
     impl Drop for Backend {
@@ -560,8 +957,8 @@ mod imp {
     }
 
     /// Montgomery reduction of the accumulated wide partials. This is the
-    /// upstream POLYVAL CLMUL reduction, split out so four-block aggregation
-    /// can share it.
+    /// upstream POLYVAL CLMUL reduction, split out so the multi-block
+    /// aggregations can share it.
     #[inline]
     #[target_feature(enable = "sse2", enable = "pclmulqdq")]
     unsafe fn reduce(t0: __m128i, t1: __m128i, t2: __m128i) -> __m128i {
@@ -631,7 +1028,22 @@ mod imp {
             match *self {}
         }
 
-        pub(super) fn update_blocks4(&mut self, _blocks: &[[u8; 16]; super::KEY_POWERS]) {
+        pub(super) fn update_blocks4(&mut self, _blocks: &[[u8; 16]; 4]) {
+            match *self {}
+        }
+
+        pub(super) fn update_blocks8(&mut self, _blocks: &[[u8; 16]; super::KEY_POWERS]) {
+            match *self {}
+        }
+
+        #[cfg(feature = "stitched-encrypt")]
+        pub(super) fn seal_bulk(
+            &mut self,
+            _round_keys: &crate::aes::RoundKeys,
+            _counter: &mut [u8; 16],
+            _plaintext: &[u8],
+            _ciphertext: &mut [u8],
+        ) {
             match *self {}
         }
 

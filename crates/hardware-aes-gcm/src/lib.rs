@@ -194,29 +194,56 @@ impl KeyState {
         let mut counter = j0(nonce);
         increment_counter(&mut counter);
 
-        let mut plaintext_chunks = plaintext.chunks_exact(PAR_BYTES);
-        let mut ciphertext_chunks = ciphertext.chunks_exact_mut(PAR_BYTES);
-        if plaintext.len() >= PAR_BYTES {
-            // The batch buffer (and its wipe on drop) is scoped to messages
-            // that actually use the interleaved path, so short messages do
-            // not pay for it.
-            let mut keystream = Zeroizing::new([[0_u8; AES_BLOCK_SIZE]; PAR_BLOCKS]);
-            for (plaintext_chunk, ciphertext_chunk) in
-                (&mut plaintext_chunks).zip(&mut ciphertext_chunks)
-            {
-                ciphertext_chunk.copy_from_slice(plaintext_chunk);
-                self.keystream_batch(&mut counter, &mut keystream);
-                xor_blocks_in_place(ciphertext_chunk, &keystream);
-                ghasher.absorb_blocks(ciphertext_chunk);
+        // Stitched path: the bulk region's AES keystream and GHASH run in one
+        // fused, software-pipelined loop so the AES and PMULL pipelines overlap.
+        #[cfg(feature = "stitched-encrypt")]
+        {
+            let bulk = (plaintext.len() / PAR_BYTES) * PAR_BYTES;
+            let (plaintext_bulk, plaintext_tail) = plaintext.split_at(bulk);
+            let (ciphertext_bulk, ciphertext_tail) = ciphertext.split_at_mut(bulk);
+            if !plaintext_bulk.is_empty() {
+                ghasher.seal_bulk(
+                    self.aes.round_keys(),
+                    &mut counter,
+                    plaintext_bulk,
+                    ciphertext_bulk,
+                );
+            }
+            if !plaintext_tail.is_empty() {
+                ciphertext_tail.copy_from_slice(plaintext_tail);
+                self.apply_ctr_serial(&mut counter, ciphertext_tail);
+                ghasher.absorb_padded(ciphertext_tail);
             }
         }
 
-        let plaintext_tail = plaintext_chunks.remainder();
-        let ciphertext_tail = ciphertext_chunks.into_remainder();
-        if !plaintext_tail.is_empty() {
-            ciphertext_tail.copy_from_slice(plaintext_tail);
-            self.apply_ctr_serial(&mut counter, ciphertext_tail);
-            ghasher.absorb_padded(ciphertext_tail);
+        // Two-phase fallback (auditable reference): encrypt a batch, then GHASH
+        // it. Same output as the stitched path, slower on bulk.
+        #[cfg(not(feature = "stitched-encrypt"))]
+        {
+            let mut plaintext_chunks = plaintext.chunks_exact(PAR_BYTES);
+            let mut ciphertext_chunks = ciphertext.chunks_exact_mut(PAR_BYTES);
+            if plaintext.len() >= PAR_BYTES {
+                // The batch buffer (and its wipe on drop) is scoped to messages
+                // that actually use the interleaved path, so short messages do
+                // not pay for it.
+                let mut keystream = Zeroizing::new([[0_u8; AES_BLOCK_SIZE]; PAR_BLOCKS]);
+                for (plaintext_chunk, ciphertext_chunk) in
+                    (&mut plaintext_chunks).zip(&mut ciphertext_chunks)
+                {
+                    ciphertext_chunk.copy_from_slice(plaintext_chunk);
+                    self.keystream_batch(&mut counter, &mut keystream);
+                    xor_blocks_in_place(ciphertext_chunk, &keystream);
+                    ghasher.absorb_blocks(ciphertext_chunk);
+                }
+            }
+
+            let plaintext_tail = plaintext_chunks.remainder();
+            let ciphertext_tail = ciphertext_chunks.into_remainder();
+            if !plaintext_tail.is_empty() {
+                ciphertext_tail.copy_from_slice(plaintext_tail);
+                self.apply_ctr_serial(&mut counter, ciphertext_tail);
+                ghasher.absorb_padded(ciphertext_tail);
+            }
         }
 
         let mut tag = ghasher.finalize(aad.len(), plaintext.len())?;
@@ -965,7 +992,7 @@ fn j0(nonce: &[u8; NONCE_SIZE]) -> [u8; 16] {
 
 /// Operates on the public nonce-derived counter block; constant time anyway
 /// (`wrapping_add` carries without branching).
-fn increment_counter(counter: &mut [u8; 16]) {
+pub(crate) fn increment_counter(counter: &mut [u8; 16]) {
     let mut low_bytes = [0_u8; 4];
     low_bytes.copy_from_slice(&counter[12..]);
     let low = u32::from_be_bytes(low_bytes).wrapping_add(1);
@@ -1202,8 +1229,8 @@ mod tests {
     #[test]
     fn generated_nonce_does_not_change_key_state_size() {
         // The nonce generator lives on the handle, not the placed key state.
-        assert_eq!(HardwareAes256Gcm::key_state_layout().size, 304);
-        assert_eq!(HardwareAes256Gcm::state_size(), 304);
+        assert_eq!(HardwareAes256Gcm::key_state_layout().size, 368);
+        assert_eq!(HardwareAes256Gcm::state_size(), 368);
     }
 
     #[test]

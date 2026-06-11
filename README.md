@@ -8,27 +8,34 @@ fallback is compiled in.
 
 Leaning almost entirely on the CPU's dedicated cryptographic instructions -
 AES-NI/PCLMULQDQ on x86_64, ARMv8 AES/PMULL on aarch64 - is what produces the
-gap below. It is on par with `ring` at small-to-medium sizes (faster on the
-per-record key pattern and key generation; ring pulls ahead only on bulk
-16 KiB), runs an order of magnitude faster than a default RustCrypto build, and
-carries the smallest reusable key state of the three.
+gap below. Encryption is faster than `ring` at every size from 16 bytes through
+16 KiB, including bulk, because the encrypt path stitches the AES keystream and
+GHASH multiply into one software-pipelined loop so both execution pipelines stay
+busy. It runs an order of magnitude faster than a default RustCrypto build and
+carries the smallest reusable key state of the three. (Decryption deliberately
+trails `ring` on larger inputs: it verifies the tag before writing any
+plaintext, a two-pass design `ring`'s decrypt-then-verify avoids; see
+[docs/benchmarks.md](docs/benchmarks.md).)
 
 | Operation (lower is better, ns) | this crate | ring | RustCrypto (default) | RustCrypto (armv8 cfgs) |
 | --- | --- | --- | --- | --- |
-| encrypt 1 KiB | 227 | 220 | 5100 | 578 |
-| encrypt 16 KiB | 3050 | 2420 | 77800 | 8780 |
-| per-record key (setup + encrypt 256 B + drop) | 182 | 190 | 2080 | 317 |
+| encrypt 1 KiB | 154 | 213 | 4950 | 565 |
+| encrypt 16 KiB | 1950 | 2330 | 75500 | 8570 |
+| per-record key (setup + encrypt 256 B + drop) | 167 | 188 | 2060 | 320 |
 | AES key generation (32-byte) | 24 | - | - | - |
 
-Reusable AES-256-GCM key-state size: **this crate 304 B / ring 544 B /
+Reusable AES-256-GCM key-state size: **this crate 368 B / ring 544 B /
 RustCrypto 992 B**. Measured on a MacBook Pro (Apple M4 Max, single machine);
-at these ~200 ns scales run-to-run variance is roughly +/-10%, so the 1 KiB
-figure is a tie with `ring`, not a lead. The full matrix, both RustCrypto build
-configurations, and methodology are in [docs/benchmarks.md](docs/benchmarks.md).
+at these ~200 ns scales run-to-run variance is roughly +/-10%. The allocation-free
+`*_to` APIs run faster still (1 KiB encrypt 133 ns). The full matrix, both
+RustCrypto build configurations, and methodology are in
+[docs/benchmarks.md](docs/benchmarks.md).
 
-**How it gets there:** eight-way interleaved hardware CTR, four-block
-aggregated GHASH with precomputed key powers, a register-resident key
-schedule, a fused single-pass encrypt, and allocation-free `*_to` APIs.
+**How it gets there:** a stitched encrypt loop that software-pipelines eight-way
+interleaved hardware CTR against eight-block aggregated GHASH so the AES and
+carryless-multiply pipelines run concurrently, a register-resident key schedule,
+fused single-pass encryption that touches each ciphertext byte once, and
+allocation-free `*_to` APIs.
 **Why that is also safer:** the AES S-box never touches memory, so the classic
 cache-timing attack surface does not exist here; and there is no silent
 software fallback - if the required hardware is absent, construction fails with
@@ -108,7 +115,7 @@ This is a strict subset of the upstream functionality: AES-256-GCM with
 
 The motivation is the cached-key tier of applications that hold many keys resident: cached key-equivalent state
 should be as small as a hardware key schedule actually needs
-(`HardwareAes256Gcm` state is 304 bytes: 15 AES round keys plus four
+(`HardwareAes256Gcm` state is 368 bytes: 15 AES round keys plus eight
 precomputed GHASH key powers), should fit guarded-memory placement policies,
 and should never be able to *be* a software AES state. If the required CPU
 features are absent, construction fails with a typed error instead of

@@ -10,7 +10,7 @@
 | --- | --- |
 | **Title** | Security Assessment of the `hardware-rust-crypto` AES-256-GCM and key-generation primitives |
 | **Target** | `hardware-rust-crypto` workspace - `hardware-aes-gcm`, `hardware-random` |
-| **Version reviewed** | git `71396df` (branch `pr-1-review`, PR #1) |
+| **Version reviewed** | git `9d7c52b` (branch `pr-1-review`, PR #1) |
 | **Assessment type** | Multi-model agentic cryptographic source review with differential, statistical, and assembly-level verification |
 | **Assessment date** | 2026-06-11 |
 | **Toolchain** | rustc 1.96.0; crate MSRV 1.88; edition 2021 |
@@ -206,7 +206,7 @@ hardware-rust-crypto (workspace facade, src/lib.rs)
 |-- hardware-aes-gcm            AES-256-GCM, hardware-only
 |   |-- lib.rs    public API; GCM composition (J0, CTR, GHASH glue, tag)
 |   |-- aes.rs    AES-256 key expansion + 1-/8-block encryption (NI / ARMv8)
-|   |-- ghash.rs  GHASH->POLYVAL, CLMUL/PMULL, 4-block aggregated reduction
+|   |-- ghash.rs  GHASH->POLYVAL, CLMUL/PMULL, 8-block aggregated reduction
 |   |-- nonce.rs  generated-nonce sequence (96-bit OS salt + 64-bit counter)
 |   `-- fork.rs   pthread_atfork generation counter (nonce re-salt)
 `-- hardware-random            key/nonce generation
@@ -221,12 +221,12 @@ hardware-rust-crypto (workspace facade, src/lib.rs)
 ```
 key (32B) --> KeyState::init_in_place
                  |- aes::Aes256::init_in_place          (expand round keys)
-                 `- H = E(K, 0^128) --> GHashKey         (derive POLYVAL H^1..H^4)
+                 `- H = E(K, 0^128) --> GHashKey         (derive POLYVAL H^1..H^8)
 nonce(12B),aad,plaintext --> seal()
                  J0 = nonce || 0^31 || 1
                  mask = E(K, J0)
                  for each 128B batch:  C = P XOR AES-CTR(inc32(J0)...)   (8-way)
-                                       GHASH <- C                      (4-block agg.)
+                                       GHASH <- C                      (8-block agg., stitched)
                  S = GHASH(aad, C, lengths)
                  tag = S XOR mask
                  out = C || tag                          (|| nonce in the nonce-appended layout)
@@ -576,20 +576,23 @@ zeroization in Rust and is not specific to this library.
 | **Status** | Open |
 | **Location** | `tests/aes_gcm_interop.rs`; `crates/hardware-aes-gcm/src/ghash.rs` |
 
-**Description.** The 4-block aggregated GHASH reduction (section 7.2) is novel relative
-to the per-block upstream POLYVAL and is the most intricate arithmetic in the
-codebase. Its correctness currently rests on differential testing against
-RustCrypto/`ring` and NIST KATs - strong evidence, but not a machine-checked
-proof, and the well-known Google Project Wycheproof AES-GCM vectors (which
-target truncated tags, oversized inputs, and special-value nonces) are not
-integrated.
+**Description.** The 8-block aggregated GHASH reduction (section 7.2), shared by
+the two-phase and stitched encrypt paths, is novel relative to the per-block
+upstream POLYVAL and is the most intricate arithmetic in the codebase. Its
+correctness currently rests on differential testing against RustCrypto/`ring`
+and NIST KATs - strong evidence, but not a machine-checked proof, and the
+well-known Google Project Wycheproof AES-GCM vectors (which target truncated
+tags, oversized inputs, and special-value nonces) are not integrated.
 
 **Evidence.** The dense differential sweep exercises the aggregation/batch
-boundaries:
+boundaries through multiple full batches and their tails, under both the
+stitched (default) and two-phase encrypt configurations in CI:
 
 ```rust
 // tests/aes_gcm_interop.rs (dense_length_sweep_matches_rustcrypto)
-let lengths = (0..=288_usize).chain([511,512,513,1023,1024,1025,4095,4096,4097]);
+let lengths = (0..=288_usize).chain([
+    511, 512, 513, 1023, 1024, 1025, 4095, 4096, 4097, 8191, 8192, 8193, 16383, 16384, 16385,
+]);
 ```
 
 **Impact.** A latent aggregation defect would manifest as authentication
@@ -668,7 +671,7 @@ const MAX_GHASH_INPUT_LEN: u64 = u64::MAX / 8;
 by NIST KATs and byte-for-byte differential equality with two independent
 implementations (Appendix B).
 
-### 7.2 GHASH via POLYVAL and the 4-block aggregated reduction
+### 7.2 GHASH via POLYVAL and the 8-block aggregated reduction
 
 The GHASH backend (`ghash.rs`) vendors the RustCrypto `ghash`->`polyval` mapping
 and the CLMUL/PMULL multiply, and adds an aggregated reduction.
@@ -681,11 +684,11 @@ reversing the final tag. `mulx` is the GF(2^128) doubling with the reduction
 polynomial folded in branch-free (HRC-2026-05).
 
 **Aggregated reduction (the novel part).** POLYVAL's per-block update is
-`Y_i = (Y_{i-1} XOR X_i) * H`. By Horner's rule over a 4-block batch from
+`Y_i = (Y_{i-1} XOR X_i) * H`. By Horner's rule over an 8-block batch from
 accumulator `Y`:
 
 ```
-Y' = (Y XOR X1) * H^4  XOR  X2 * H^3  XOR  X3 * H^2  XOR  X4 * H^1
+Y' = (Y XOR X1) * H^8  XOR  X2 * H^7  XOR  ...  XOR  X7 * H^2  XOR  X8 * H^1
 ```
 
 Let `W(a,b)` denote the *unreduced* (wide) carryless product and `R` the
@@ -693,20 +696,25 @@ Montgomery reduction. Because `W` is bilinear over GF(2) addition (XOR) and `R`
 is GF(2)-linear:
 
 ```
-Y' = R( W(Y XOR X1, H^4) XOR W(X2, H^3) XOR W(X3, H^2) XOR W(X4, H^1) )
+Y' = R( W(Y XOR X1, H^8) XOR W(X2, H^7) XOR ... XOR W(X8, H^1) )
 ```
 
-i.e. the four wide products are XOR-accumulated and reduced **once**. This is
+i.e. the eight wide products are XOR-accumulated and reduced **once**. This is
 the Gueron-Kounavis aggregated reduction (Intel CLMUL whitepaper) and is
-exactly what `update_blocks4_inner` implements, using precomputed key powers
-`H^1..H^4` stored in the key state. The implementation precomputes the powers at
-setup:
+exactly what `update_blocks8_inner` (and its in-register twin `ghash8_regs`,
+used by the stitched encrypt path) implements, using precomputed key powers
+`H^1..H^8` stored in the key state. Four- and one-block reductions remain for
+the sub-batch tail. The implementation precomputes the powers at setup:
 
 ```rust
 // crates/hardware-aes-gcm/src/ghash.rs (init_in_place)
 let mut h2 = unsafe { imp::mul(&h1, &h1) };  // H^2
 let mut h3 = unsafe { imp::mul(&h2, &h1) };  // H^3
 let mut h4 = unsafe { imp::mul(&h2, &h2) };  // H^4
+let mut h5 = unsafe { imp::mul(&h4, &h1) };  // H^5
+let mut h6 = unsafe { imp::mul(&h4, &h2) };  // H^6
+let mut h7 = unsafe { imp::mul(&h4, &h3) };  // H^7
+let mut h8 = unsafe { imp::mul(&h4, &h4) };  // H^8
 ```
 
 **Assurance.** Correctness rests on the algebraic identity above plus
@@ -723,6 +731,20 @@ for counter mode). The 8-way interleaved CTR encrypts eight independent counter
 blocks per batch; independence is structural and equivalence to serial CTR is
 confirmed by the differential corpus. The AES-256-CTR keystream was
 cross-validated against OpenSSL AES-256-ECB (Appendix B).
+
+**Stitched encrypt (`stitched-encrypt` feature, default on).** On the bulk
+encrypt path the keystream batch and the GHASH of the previous batch's
+ciphertext are emitted as two independent instruction sequences in one
+`#[target_feature]` body (`seal_bulk_inner`), software-pipelined so the AES and
+carryless-multiply pipelines overlap. This is a scheduling change only: the
+instructions are the same data-independent AESE/AESMC (AESENC/AESENCLAST),
+PMULL/PMULL2 (PCLMULQDQ), XOR, and in-register byte-reverse (REV / PSHUFB), the
+loop bound is the public batch count, and no memory index depends on a secret,
+so the constant-time argument of section 6 is unchanged. The output is identical
+to the two-phase reference loop (selected by disabling the default feature),
+which is held to the same differential corpus in CI. Decryption is **not**
+stitched: verify-before-decrypt requires GHASH to complete before the CTR pass
+begins, so there is nothing to overlap.
 
 ### 7.4 AES-CTR DRBG and the reseed blend (relationship to SP 800-90A Rev. 1)
 
@@ -790,7 +812,7 @@ differentiates instances across process restart, fork, and hosts. Fork is
 detected by the same `pthread_atfork` generation counter used in
 `hardware-random` (`fork.rs`), so a forked child re-salts before its next
 nonce and never repeats its parent's sequence. The generator state lives on the
-handle, not in the placed key state, so the 304-byte key-state footprint is
+handle, not in the placed key state, so the 368-byte key-state footprint is
 unchanged (asserted by test).
 
 The residual is the cross-instance base-range overlap: for M instances of n
@@ -839,7 +861,7 @@ SIMD/intrinsic code. The surface, measured at the reviewed commit:
 | File | `unsafe` blocks | `unsafe fn` | `SAFETY:` comments |
 | --- | ---: | ---: | ---: |
 | `hardware-aes-gcm/aes.rs` | 35 | 9 | 35 |
-| `hardware-aes-gcm/ghash.rs` | 36 | 21 | 36 |
+| `hardware-aes-gcm/ghash.rs` | 54 | 28 | 54 |
 | `hardware-aes-gcm/lib.rs` | 11 | 1 | 13 |
 | `hardware-aes-gcm/fork.rs` | 1 | 0 | 1 |
 | `hardware-aes-gcm/nonce.rs` | 0 | 0 | 0 |

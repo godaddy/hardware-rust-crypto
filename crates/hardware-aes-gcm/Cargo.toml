@@ -17,5 +17,13 @@ zeroize = "1.8"
 # pthread_atfork-based fork detection for nonce re-salting on Unix.
 libc = "0.2"
 
+[features]
+default = ["stitched-encrypt"]
+# Stitched (fused) AES-GCM encrypt loop: interleaves the AES keystream and
+# GHASH multiply pipelines for higher bulk throughput. Disabling it falls back
+# to the two-phase encrypt loop (the auditable reference path); correctness is
+# identical, bulk encryption is slower.
+stitched-encrypt = []
+
 [lints]
 workspace = true
