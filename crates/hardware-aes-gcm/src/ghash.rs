@@ -356,12 +356,12 @@ mod imp {
         std::arch::is_x86_feature_detected!("pclmulqdq")
     }
 
-    #[inline(always)]
+    #[inline]
     unsafe fn xor4(e1: __m128i, e2: __m128i, e3: __m128i, e4: __m128i) -> __m128i {
         _mm_xor_si128(_mm_xor_si128(e1, e2), _mm_xor_si128(e3, e4))
     }
 
-    #[inline(always)]
+    #[inline]
     unsafe fn xor5(e1: __m128i, e2: __m128i, e3: __m128i, e4: __m128i, e5: __m128i) -> __m128i {
         _mm_xor_si128(
             e1,
