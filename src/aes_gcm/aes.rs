@@ -263,8 +263,7 @@ mod imp {
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
         __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_aeskeygenassist_si128,
-        _mm_loadu_si128, _mm_setzero_si128, _mm_shuffle_epi32, _mm_slli_si128, _mm_storeu_si128,
-        _mm_xor_si128,
+        _mm_loadu_si128, _mm_shuffle_epi32, _mm_slli_si128, _mm_storeu_si128, _mm_xor_si128,
     };
 
     const AES256_ROUND_KEY_COUNT: usize = 15;
