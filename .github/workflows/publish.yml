@@ -6,9 +6,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   publish:
-    name: cargo publish
+    name: publish hardware-rust-crypto
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -21,15 +24,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      # The two library crates are independent (neither depends on the other),
-      # so publish order does not matter. The workspace facade and benches are
-      # not published (publish = false).
-      - name: Publish hardware-random
-        run: cargo publish -p hardware-random --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-
-      - name: Publish hardware-aes-gcm
-        run: cargo publish -p hardware-aes-gcm --locked
+      - name: Publish hardware-rust-crypto
+        run: cargo publish --package hardware-rust-crypto --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
