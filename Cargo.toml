@@ -1,0 +1,65 @@
+[package]
+name = "hardware-rust-crypto"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+description = "Hardware-only AES-256-GCM and AES-256-CTR key/nonce generation (AES-NI/PCLMULQDQ, ARMv8 AES/PMULL) with compact, caller-placeable, zeroized key state."
+repository = "https://github.com/godaddy/hardware-rust-crypto"
+readme = "README.md"
+keywords = ["aes-gcm", "aes", "aead", "encryption", "hardware"]
+categories = ["cryptography"]
+
+# Single-crate repository: declare an explicit workspace root so the package is
+# self-contained and not adopted by an enclosing workspace.
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[features]
+default = ["cpu-rng-reseed"]
+# Blend CPU hardware-RNG entropy (RDSEED on x86_64, RNDRRS/FEAT_RNG on
+# aarch64) through the generator state on reseed instead of querying the OS,
+# when the instruction is available to the guest. Runtime-detected with OS
+# fallback; uses only core::arch, so it adds no dependency. Disable to always
+# reseed from the OS.
+cpu-rng-reseed = []
+
+[dependencies]
+# getrandom supplies OS entropy for seeding and for the 96-bit nonce salt; it
+# is an OS-entropy wrapper, not a cipher.
+getrandom = "0.3"
+subtle = { version = "2.6", default-features = false }
+zeroize = "1.8"
+
+[target.'cfg(unix)'.dependencies]
+# pthread_atfork-based fork detection on Unix.
+libc = "0.2"
+
+[dev-dependencies]
+aes-gcm = { version = "0.10", features = ["aes"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+# Software stream ciphers appear only here, as benchmark comparison baselines.
+# The production graph depends on no cipher; CI enforces that with a
+# dependency-tree check.
+rand = "0.9"
+rand_chacha = "0.9"
+ring = "0.17"
+salsa20 = "0.10"
+
+[[bench]]
+name = "aes_gcm"
+harness = false
+
+[[bench]]
+name = "random"
+harness = false

@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            expected_arch: x86_64
+          - name: macos-aarch64
+            os: macos-14
+            expected_arch: arm64
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify runner architecture
+        run: |
+          actual="$(uname -m)"
+          if [ "$actual" != "${{ matrix.expected_arch }}" ]; then
+            echo "expected ${{ matrix.expected_arch }}, got $actual" >&2
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Assert crypto hardware is available
+        run: cargo run --example assert_hardware
+
+      - name: Forbid software ciphers and third-party crypto in production graph
+        run: |
+          for pkg in hardware-rust-crypto; do
+            hits="$(cargo tree -p "$pkg" -e normal --prefix none \
+              | grep -ciE '^(rand|rand_core|rand_chacha|chacha20|salsa20|ring|aes|aes-gcm|ctr|cipher|ghash|polyval|universal-hash|sha1|sha2|md-5) ' || true)"
+            if [ "$hits" != "0" ]; then
+              echo "forbidden crypto dependency in $pkg production graph:" >&2
+              cargo tree -p "$pkg" -e normal >&2
+              exit 1
+            fi
+          done
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      - name: Release crypto tests
+        run: |
+          cargo test --release --test aes_gcm_interop
+          cargo test --release -p hardware-rust-crypto
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit

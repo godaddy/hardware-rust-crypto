@@ -1,0 +1,52 @@
+hardware-rust-crypto
+Copyright (c) 2026 GoDaddy Operating Company, LLC.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository vendors and adapts source code from the following upstream
+projects. Each entry records the exact upstream version and commit the code
+was taken from, the upstream copyright holder, and the license under which the
+code is used. The adapted files reference this file from their module
+documentation.
+
+--------------------------------------------------------------------------------
+
+1. rand_aes
+   - Repository: https://github.com/hasenbanck/rand_aes
+   - Version: 0.7.0 (tag v0.7.0, commit 2b5be4110c5229df0b5578ced031686444496c6d)
+   - Copyright: Nils Hasenbanck <nils@hasenbanck.de> and rand_aes contributors
+   - License: Apache-2.0
+   - Adapted code:
+     - AES-256 key expansion and block encryption for x86/x86_64 (AES-NI) and
+       aarch64 (ARMv8 AES/NEON):
+       src/aes_gcm/aes.rs
+     - AES-256-CTR-128 generator backend:
+       src/random/aes_ctr.rs
+   - Modifications: removed the software (fixsliced) fallback backend, runtime
+     dispatch enum, boxed backend state, jump APIs, and non-AES-256 variants;
+     added fallible hardware-feature gating, in-place key-schedule
+     initialization, and volatile zeroization on drop.
+
+2. ghash (RustCrypto universal-hashes)
+   - Repository: https://github.com/RustCrypto/universal-hashes
+   - Version: 0.5.1 (tag ghash-v0.5.1, commit 655c6cbef85b0faa7ff24c0686986cf2c27b2c6d)
+   - Copyright: The RustCrypto Project Developers
+   - License: Apache-2.0 OR MIT (used here under Apache-2.0)
+   - Adapted code: the GHASH-to-POLYVAL mapping in
+     src/aes_gcm/ghash.rs
+
+3. polyval (RustCrypto universal-hashes)
+   - Repository: https://github.com/RustCrypto/universal-hashes
+   - Version: 0.6.2 (tag polyval-v0.6.2, commit 4e7d04f7c8e44f634ada8c673c8cb1672a64d374)
+   - Copyright: The RustCrypto Project Developers
+   - License: Apache-2.0 OR MIT (used here under Apache-2.0)
+   - Adapted code: the CLMUL (x86/x86_64) and PMULL (aarch64) carryless
+     multiplication backends in src/aes_gcm/ghash.rs
+   - Modifications: removed the software fallback backend and the runtime
+     autodetection enum.
+
+The AES-256-GCM composition logic (J0 construction, CTR keystream application,
+length-block authentication, and tag handling) in
+src/aes_gcm/mod.rs is implemented from NIST SP 800-38D and the
+RustCrypto `aes-gcm` crate's design, and is validated byte-for-byte against
+RustCrypto `aes-gcm` 0.10 and `ring` 0.17 by the interoperability test suite.
