@@ -71,6 +71,7 @@ instruction) are at T3.
 | Decrypt paths constant-time (data-independent, end to end) | T4 | dudect Welch t-test, **CI-gated** (`\|t\| < 25`, best-of-3) | `constant-time` CI job |
 | No third-party cipher in the production graph; advisories/licenses clean | T4 | CI-enforced graph check + `cargo audit` + `cargo deny` | CI, `deny.toml` |
 | RNG output quality | T4 | monobit/chi-square/serial-correlation + PractRand/dieharder procedure | `tests/rng_statistical.rs`, `docs/randomness-testing.md` |
+| Test-suite effectiveness (the tests catch injected bugs) | T4 | **mutation testing** (`cargo-mutants`) over the GCM composition + nonce generator; genuine gaps closed, residual survivors individually accounted for | `docs/mutation-testing.md`, `heavy-assurance` workflow |
 
 ## What is still open
 

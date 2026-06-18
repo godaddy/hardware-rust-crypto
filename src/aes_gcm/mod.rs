@@ -1573,11 +1573,11 @@ pub fn ct_verify_constant_time_eq(expected: &[u8; TAG_SIZE], actual: &[u8; TAG_S
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::panic)]
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use super::{
         increment_counter, j0, Error, HardwareAes256Gcm, HardwareAes256GcmIn,
-        HardwareAes256GcmKeyState, UninitKeyStateSlot, NONCE_SIZE,
+        HardwareAes256GcmKeyState, UninitKeyStateSlot, NONCE_SIZE, TAG_SIZE,
     };
     use core::mem::ManuallyDrop;
 
@@ -1863,6 +1863,130 @@ mod tests {
                 .expect("decryption should succeed"),
             b"plaintext"
         );
+    }
+
+    /// Exercises *every* `HardwareAes256GcmIn` explicit-buffer / nonce-appended
+    /// method with a verified round trip (and byte-exact cross-validation against
+    /// `HardwareAes256Gcm` for the explicit-nonce paths). Without this, the thin
+    /// delegations to the underlying key state are called but their output is
+    /// never checked, so a wrong (or stubbed) wrapper survives - a gap surfaced
+    /// by mutation testing (see docs/mutation-testing.md).
+    #[test]
+    fn caller_placed_in_buffer_methods_round_trip() {
+        const KEY: [u8; 32] = [7_u8; 32];
+        const NONCE: [u8; NONCE_SIZE] = [0x24; NONCE_SIZE];
+        let pt = b"caller-placed in-buffer methods".to_vec();
+        let aad = b"header".as_slice();
+
+        let layout = HardwareAes256Gcm::key_state_layout();
+        let mut storage = AlignedStorage::<512>([0_u8; 512]);
+        let slot = UninitKeyStateSlot::new(&mut storage.0[..layout.size]).expect("valid slot");
+        let mut key = HardwareAes256GcmIn::new_in(&KEY, slot).expect("valid test key");
+        // Independent reference for byte-exact cross-validation.
+        let reference = HardwareAes256Gcm::new(&KEY).expect("reference key");
+
+        // --- explicit nonce: byte-identical to the reference, and round-trips ---
+        let ct = key
+            .encrypt_with_nonce(&NONCE, aad, &pt)
+            .expect("encrypt_with_nonce");
+        assert_eq!(
+            ct,
+            reference.encrypt_with_nonce(&NONCE, aad, &pt).unwrap(),
+            "encrypt_with_nonce diverged from the reference cipher"
+        );
+        assert_eq!(key.decrypt_with_nonce(&NONCE, aad, &ct).unwrap(), pt);
+
+        let mut buf = vec![0_u8; pt.len() + TAG_SIZE];
+        let n = key
+            .encrypt_with_nonce_to(&NONCE, aad, &pt, &mut buf)
+            .expect("encrypt_with_nonce_to");
+        assert_eq!(n, pt.len() + TAG_SIZE);
+        assert_eq!(&buf[..n], &ct[..]);
+        let mut out = vec![0_u8; pt.len()];
+        let m = key
+            .decrypt_with_nonce_to(&NONCE, aad, &buf[..n], &mut out)
+            .expect("decrypt_with_nonce_to");
+        assert_eq!(&out[..m], &pt[..]);
+
+        // --- nonce-appended (empty AAD), explicit nonce ---
+        let env = key
+            .encrypt_nonce_appended(&NONCE, &pt)
+            .expect("encrypt_nonce_appended");
+        assert_eq!(key.decrypt_nonce_appended(&env).unwrap(), pt);
+
+        let mut env_buf = vec![0_u8; pt.len() + TAG_SIZE + NONCE_SIZE];
+        let n = key
+            .encrypt_nonce_appended_to(&NONCE, &pt, &mut env_buf)
+            .expect("encrypt_nonce_appended_to");
+        assert_eq!(n, env_buf.len());
+        assert_eq!(env_buf, env);
+        let mut out = vec![0_u8; pt.len()];
+        let m = key
+            .decrypt_nonce_appended_to(&env_buf, &mut out)
+            .expect("decrypt_nonce_appended_to");
+        assert_eq!(&out[..m], &pt[..]);
+
+        // In-place encrypt: from an under-capacity Vec (forces the reserve path)
+        // and from an exact-capacity Vec; both must round-trip.
+        for prealloc in [0_usize, pt.len() + TAG_SIZE + NONCE_SIZE] {
+            let mut in_out = Vec::with_capacity(prealloc);
+            in_out.extend_from_slice(&pt);
+            key.encrypt_nonce_appended_in_place(&NONCE, &mut in_out)
+                .expect("encrypt_nonce_appended_in_place");
+            assert_eq!(in_out, env, "in-place layout must match");
+            assert_eq!(key.decrypt_nonce_appended(&in_out).unwrap(), pt);
+        }
+
+        // --- generated nonce: round-trips, and successive outputs differ ----
+        let mut out = vec![0_u8; pt.len() + TAG_SIZE + NONCE_SIZE];
+        let n = key.encrypt_to(aad, &pt, &mut out).expect("encrypt_to");
+        assert_eq!(n, out.len());
+        let mut dec = vec![0_u8; pt.len()];
+        let m = key.decrypt_to(aad, &out, &mut dec).expect("decrypt_to");
+        assert_eq!(&dec[..m], &pt[..]);
+
+        let g1 = key.encrypt_nonce_appended_generated(&pt).unwrap();
+        let g2 = key.encrypt_nonce_appended_generated(&pt).unwrap();
+        assert_ne!(g1, g2, "generated nonces must differ between calls");
+        assert_eq!(key.decrypt_nonce_appended(&g1).unwrap(), pt);
+        assert_eq!(key.decrypt_nonce_appended(&g2).unwrap(), pt);
+
+        drop(reference);
+    }
+
+    /// The owned-key-state `encrypt_to` must write a real envelope that decrypts
+    /// back (a delegation previously not output-verified; mutation testing).
+    #[test]
+    fn owned_key_state_encrypt_to_round_trips() {
+        let mut key = HardwareAes256GcmKeyState::new(&[9_u8; 32]).expect("valid key");
+        let pt = b"owned key state encrypt_to path";
+        let mut out = vec![0_u8; pt.len() + TAG_SIZE + NONCE_SIZE];
+        let n = key.encrypt_to(b"aad", pt, &mut out).expect("encrypt_to");
+        assert_eq!(n, out.len());
+        assert_eq!(key.decrypt(b"aad", &out).expect("decrypt"), pt);
+    }
+
+    /// `validate_gcm_lengths` must reject an input that exceeds *any one* of the
+    /// length limits (not only all of them) - exercised with length *values*, so
+    /// no allocation is needed. Pins the `||` chain against a `&&` regression
+    /// (mutation testing) and complements the Kani harness, which `cargo test`
+    /// does not run.
+    #[test]
+    fn gcm_length_validation_rejects_each_over_limit() {
+        use super::{validate_gcm_lengths, MAX_GCM_DATA_LEN, MAX_GHASH_INPUT_LEN};
+        assert!(validate_gcm_lengths(16, 16).is_ok());
+        // Over the GCM counter limit on the data (AAD in range).
+        if let Ok(over) = usize::try_from(MAX_GCM_DATA_LEN + 1) {
+            assert_eq!(validate_gcm_lengths(16, over), Err(Error::InputTooLarge));
+        }
+        // Over the GHASH 64-bit length-field limit on the AAD (data in range).
+        if let Ok(over) = usize::try_from(MAX_GHASH_INPUT_LEN + 1) {
+            assert_eq!(validate_gcm_lengths(over, 16), Err(Error::InputTooLarge));
+        }
+        // Exactly at the GCM data limit is accepted.
+        if let Ok(lim) = usize::try_from(MAX_GCM_DATA_LEN) {
+            assert!(validate_gcm_lengths(0, lim).is_ok());
+        }
     }
 
     #[test]
