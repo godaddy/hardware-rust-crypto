@@ -288,6 +288,8 @@ jobs:
       # correct boundary. See the cfg(kani) modules and docs/assurance.md.
       - name: Run Kani proof harnesses
         run: cargo kani
+
+  randomness-battery:
     name: randomness battery (PractRand)
     runs-on: ubuntu-latest
     steps:
