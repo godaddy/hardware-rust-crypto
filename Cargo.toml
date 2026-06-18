@@ -47,6 +47,9 @@ libc = "0.2"
 
 [dev-dependencies]
 aes-gcm = { version = "0.10", features = ["aes"] }
+# Reference AES-256-GCM-SIV (RFC 8452) implementation, used only to
+# cross-validate the hardware SIV path in interop tests.
+aes-gcm-siv = { version = "0.11", features = ["aes"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 # Software stream ciphers appear only here, as benchmark comparison baselines.
 # The production graph depends on no cipher; CI enforces that with a
@@ -58,6 +61,10 @@ salsa20 = "0.10"
 
 [[bench]]
 name = "aes_gcm"
+harness = false
+
+[[bench]]
+name = "aes_gcm_siv"
 harness = false
 
 [[bench]]

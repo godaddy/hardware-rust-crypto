@@ -46,6 +46,14 @@ impl Aes256 {
         self.0.encrypt_block(block);
     }
 
+    /// Encrypts eight independent 16-byte blocks in place through eight
+    /// interleaved AES chains, hiding the AESE/AESENC latency a serial loop
+    /// cannot. Used to generate the AES-256-GCM-SIV CTR keystream a full
+    /// 128-byte batch at a time.
+    pub(crate) fn encrypt8(&self, blocks: &mut [[u8; 16]; PAR_BLOCKS]) {
+        self.0.encrypt8(blocks);
+    }
+
     /// Borrows the expanded round keys for the stitched encrypt path.
     pub(crate) fn round_keys(&self) -> &RoundKeys {
         self.0.round_keys()
@@ -128,6 +136,12 @@ mod imp {
             unsafe { self.encrypt_block_inner(block) };
         }
 
+        pub(super) fn encrypt8(&self, blocks: &mut [[u8; 16]; 8]) {
+            // SAFETY: Aes256 can only be constructed after hardware_available
+            // has checked the target features required by encrypt8_inner.
+            unsafe { self.encrypt8_inner(blocks) };
+        }
+
         #[target_feature(enable = "aes", enable = "neon")]
         unsafe fn init_inner(dst: *mut Self, key: &[u8; 32]) {
             // SAFETY: dst is valid writable storage for Self and the field
@@ -158,6 +172,30 @@ mod imp {
 
             // SAFETY: block is a valid 16-byte writable buffer.
             unsafe { vst1q_u8(block.as_mut_ptr(), state) };
+        }
+
+        /// Eight interleaved AES-256 chains. The eight round chains are emitted
+        /// as one instruction stream so the scheduler keeps the AESE/AESMC
+        /// pipeline full; constant time, with no data-dependent control flow.
+        #[target_feature(enable = "aes", enable = "neon")]
+        unsafe fn encrypt8_inner(&self, blocks: &mut [[u8; 16]; 8]) {
+            let mut state = [vdupq_n_u8(0); 8];
+            for (lane, block) in state.iter_mut().zip(blocks.iter()) {
+                // SAFETY: each block is a valid 16-byte initialized buffer.
+                *lane = unsafe { vld1q_u8(block.as_ptr()) };
+            }
+            for round_key in &self.round_keys[..13] {
+                for lane in &mut state {
+                    *lane = vaesmcq_u8(vaeseq_u8(*lane, *round_key));
+                }
+            }
+            for lane in &mut state {
+                *lane = veorq_u8(vaeseq_u8(*lane, self.round_keys[13]), self.round_keys[14]);
+            }
+            for (lane, block) in state.iter().zip(blocks.iter_mut()) {
+                // SAFETY: each block is a valid 16-byte writable buffer.
+                unsafe { vst1q_u8(block.as_mut_ptr(), *lane) };
+            }
         }
     }
 
@@ -296,6 +334,12 @@ mod imp {
             unsafe { self.encrypt_block_inner(block) };
         }
 
+        pub(super) fn encrypt8(&self, blocks: &mut [[u8; 16]; 8]) {
+            // SAFETY: Aes256 can only be constructed after hardware_available
+            // has checked the target features required by encrypt8_inner.
+            unsafe { self.encrypt8_inner(blocks) };
+        }
+
         #[target_feature(enable = "sse2", enable = "aes")]
         unsafe fn init_inner(dst: *mut Self, key: &[u8; 32]) {
             // SAFETY: dst is valid writable storage for Self and the field
@@ -326,6 +370,33 @@ mod imp {
 
             // SAFETY: block points to a writable 16-byte range.
             unsafe { _mm_storeu_si128(block.as_mut_ptr().cast(), state) };
+        }
+
+        /// Eight interleaved AES-256 chains. The eight round chains are emitted
+        /// as one instruction stream so the scheduler keeps the AESENC pipeline
+        /// full; constant time, with no data-dependent control flow.
+        #[target_feature(enable = "sse2", enable = "aes")]
+        unsafe fn encrypt8_inner(&self, blocks: &mut [[u8; 16]; 8]) {
+            // Seed the lane array with a Copy __m128i so no zero-init intrinsic
+            // import is needed; every lane is overwritten immediately below.
+            let mut state = [self.round_keys[0]; 8];
+            for (lane, block) in state.iter_mut().zip(blocks.iter()) {
+                // SAFETY: each block points to an initialized 16-byte range.
+                let input = unsafe { _mm_loadu_si128(block.as_ptr().cast()) };
+                *lane = _mm_xor_si128(input, self.round_keys[0]);
+            }
+            for round_key in &self.round_keys[1..14] {
+                for lane in &mut state {
+                    *lane = _mm_aesenc_si128(*lane, *round_key);
+                }
+            }
+            for lane in &mut state {
+                *lane = _mm_aesenclast_si128(*lane, self.round_keys[14]);
+            }
+            for (lane, block) in state.iter().zip(blocks.iter_mut()) {
+                // SAFETY: each block points to a writable 16-byte range.
+                unsafe { _mm_storeu_si128(block.as_mut_ptr().cast(), *lane) };
+            }
         }
     }
 
@@ -416,6 +487,10 @@ mod imp {
         }
 
         pub(super) fn encrypt_block(&self, _block: &mut [u8; 16]) {
+            match *self {}
+        }
+
+        pub(super) fn encrypt8(&self, _blocks: &mut [[u8; 16]; 8]) {
             match *self {}
         }
     }

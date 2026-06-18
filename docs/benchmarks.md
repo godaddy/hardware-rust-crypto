@@ -69,14 +69,17 @@ size even when tuned (3x-5x), or refuse caller placement and wipe guarantees
 ## Reproducing these numbers
 
 ```sh
-# Hardware sanity check, then the two Criterion suites (default build):
+# Hardware sanity check, then the Criterion suites (default build):
 cargo run --example assert_hardware
-cargo bench --bench aes_gcm -- --sample-size 20 --warm-up-time 1 --measurement-time 2
-cargo bench --bench random  -- --sample-size 20 --warm-up-time 1 --measurement-time 2
+cargo bench --bench aes_gcm     -- --sample-size 20 --warm-up-time 1 --measurement-time 2
+cargo bench --bench aes_gcm_siv -- --sample-size 20 --warm-up-time 1 --measurement-time 2
+cargo bench --bench random      -- --sample-size 20 --warm-up-time 1 --measurement-time 2
 
 # Stock RustCrypto with its aarch64 hardware backends enabled (second config):
 RUSTFLAGS="--cfg aes_armv8 --cfg polyval_armv8" \
-  cargo bench --bench aes_gcm -- --sample-size 20 --warm-up-time 1 --measurement-time 2 "rustcrypto"
+  cargo bench --bench aes_gcm     -- --sample-size 20 --warm-up-time 1 --measurement-time 2 "rustcrypto"
+RUSTFLAGS="--cfg aes_armv8 --cfg polyval_armv8" \
+  cargo bench --bench aes_gcm_siv -- --sample-size 20 --warm-up-time 1 --measurement-time 2 "rustcrypto"
 
 # Key-state footprints (run under both configurations; sizes do not change):
 cargo run --release --example state_size
@@ -187,6 +190,80 @@ variant even when hardware backends are enabled).
 | candidate `HardwareAes256Gcm` | 368 B (align 16) | 11 |
 | ring `LessSafeKey` | 544 B (no layout/placement contract) | 7 |
 | RustCrypto `aes_gcm::Aes256Gcm` | 992 B (any configuration) | 4 |
+
+## AES-256-GCM-SIV (RFC 8452)
+
+Nonce-misuse-resistant AEAD, measured on the same machine (Apple M4 Max,
+macOS aarch64), 2026-06-18, with a shorter Criterion run than the GCM tables
+above (`--warm-up-time 0.5 --measurement-time 1.5 --sample-size 30`); read the
+sub-microsecond rows with the same +/-10% caveat. The reference is stock
+`RustCrypto` `aes-gcm-siv` 0.11, in both its default (silently software AES on
+aarch64) and `--cfg aes_armv8 --cfg polyval_armv8` (hardware) configurations.
+Unlike the GCM tables there is no `ring` column: `ring` implements no GCM-SIV
+mode (its only AEADs are AES-128/256-GCM and ChaCha20-Poly1305), so RustCrypto
+`aes-gcm-siv` is the sole external reference.
+
+SIV is not an online cipher, so it cannot use the fused single-pass GCM loop:
+per message it derives a message-authentication key and message-encryption key
+from the nonce (six AES blocks), expands a fresh AES-256 schedule, runs POLYVAL
+over the plaintext, then CTR-encrypts. The hot path is still fully hardware -
+POLYVAL reuses the eight-block aggregated reduction and the CTR pass drives
+eight interleaved AES chains - but it carries a fixed ~155 ns per-message
+key-derivation cost plus a second pass over the bulk region. The `gcm`
+column is the crate's own AES-256-GCM at the same size, so the SIV overhead is
+visible directly: ~5.6x at 16 B (key derivation dominates tiny messages),
+falling to ~1.5x at 16 KiB as it amortizes.
+
+Three results stand out:
+
+**1. Faster than RustCrypto's SIV at every size, even in its best
+(hardware) configuration** - 1.4x at 16 B, 2.4x at 1 KiB, 3.5x at 16 KiB - and
+12x-27x against the default build a consumer actually gets unmodified.
+
+**2. Key setup is cheaper than the GCM path's**, not more expensive: the SIV
+reusable state is only the key-generating AES schedule, with no GHASH/POLYVAL
+key powers to precompute (those are per-message), so setup is 23-41 ns versus
+94-114 ns for GCM and 347 ns for RustCrypto.
+
+**3. The reusable state is 240 bytes** - smaller than the crate's own 368-byte
+GCM state, and **4x smaller than RustCrypto's 960-byte `Aes256GcmSiv`**, which
+reserves space for software AES in both build configurations.
+
+### AES-256-GCM-SIV encrypt
+
+| Size | candidate | candidate-noalloc | gcm (this crate) | rustcrypto (default) | rustcrypto (armv8 cfgs) |
+| --- | --- | --- | --- | --- | --- |
+| 16 B | 201.7 ns | 190.0 ns | 35.8 ns | 2.47 us | 270.4 ns |
+| 64 B | 213.4 ns | 206.5 ns | 50.4 ns | 2.55 us | 303.0 ns |
+| 256 B | 247.2 ns | 237.5 ns | 63.5 ns | 3.52 us | 429.7 ns |
+| 1 KiB | 391.9 ns | 368.1 ns | 165.6 ns | 7.35 us | 891.1 ns |
+| 4 KiB | 953.8 ns | 870.9 ns | 553.0 ns | 22.99 us | 2.72 us |
+| 16 KiB | 3.11 us (5.03 GiB/s) | 2.88 us (5.43 GiB/s) | 2.05 us | 84.63 us | 9.96 us |
+
+### AES-256-GCM-SIV decrypt
+
+| Size | candidate | candidate-noalloc | rustcrypto (default) | rustcrypto (armv8 cfgs) |
+| --- | --- | --- | --- | --- |
+| 16 B | 206.7 ns | 196.3 ns | 2.50 us | 299.0 ns |
+| 64 B | 219.6 ns | 214.3 ns | 2.53 us | 319.3 ns |
+| 256 B | 251.7 ns | 244.7 ns | 3.52 us | 426.3 ns |
+| 1 KiB | 394.7 ns | 371.1 ns | 7.39 us | 873.9 ns |
+| 4 KiB | 920.4 ns | 884.1 ns | 23.02 us | 2.75 us |
+| 16 KiB | 3.04 us | 2.91 us | 85.11 us | 10.04 us |
+
+### AES-256-GCM-SIV key setup and footprint
+
+| Implementation | Time |
+| --- | --- |
+| candidate (caller-placed slot) | 23.2 ns |
+| candidate (boxed owned handle) | 35.6 ns |
+| candidate (inline owned key state) | 40.9 ns |
+| rustcrypto | 346.7 ns |
+
+| Type | Size |
+| --- | --- |
+| candidate `HardwareAes256GcmSiv` | 240 B (align 16) |
+| RustCrypto `aes_gcm_siv::Aes256GcmSiv` | 960 B (any configuration) |
 
 ## Key/nonce generation
 
