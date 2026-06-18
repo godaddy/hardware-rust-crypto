@@ -1388,11 +1388,99 @@ mod tests {
 
     use super::{
         aes, build_message_cipher, ctr_apply, derive_keys, increment_siv_counter, polyval_digest,
-        AES_BLOCK_SIZE, NONCE_SIZE,
+        validate_siv_lengths, HardwareAes256GcmSiv, HardwareAes256GcmSivKeyState, AES_BLOCK_SIZE,
+        MAX_SIV_LEN, NONCE_SIZE, TAG_SIZE,
     };
 
     fn cipher() -> aes::Aes256 {
         build_message_cipher(&[0x42_u8; 32]).expect("hardware AES available in tests")
+    }
+
+    /// Exercises every explicit-buffer / nonce-appended method of the public SIV
+    /// types with a verified round trip, and cross-checks that the deterministic
+    /// SIV output is byte-identical across the owned and the borrowed-key types.
+    /// Without this, the thin delegations to the inner key state are called but
+    /// never output-verified - a gap surfaced by mutation testing
+    /// (see docs/mutation-testing.md).
+    #[test]
+    fn siv_public_methods_round_trip_and_agree() {
+        const KEY: [u8; 32] = [0x5a; 32];
+        const NONCE: [u8; NONCE_SIZE] = [0x33; NONCE_SIZE];
+        let aad = b"siv header".as_slice();
+        let pt = b"AES-256-GCM-SIV explicit method coverage".to_vec();
+
+        let mut siv = HardwareAes256GcmSiv::new(&KEY).expect("valid key");
+
+        // explicit-nonce paths (SIV is deterministic, so they are stable).
+        let ct_tag = siv.encrypt_with_nonce(&NONCE, aad, &pt).unwrap();
+        assert_eq!(ct_tag.len(), pt.len() + TAG_SIZE);
+        assert_eq!(siv.decrypt_with_nonce(&NONCE, aad, &ct_tag).unwrap(), pt);
+
+        let mut buf = vec![0_u8; pt.len() + TAG_SIZE];
+        let n = siv
+            .encrypt_with_nonce_to(&NONCE, aad, &pt, &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..n], &ct_tag[..]);
+        let mut out = vec![0_u8; pt.len()];
+        let m = siv
+            .decrypt_with_nonce_to(&NONCE, aad, &ct_tag, &mut out)
+            .unwrap();
+        assert_eq!(&out[..m], &pt[..]);
+
+        // nonce-appended (empty AAD).
+        let env = siv.encrypt_nonce_appended(&NONCE, &pt).unwrap();
+        assert_eq!(siv.decrypt_nonce_appended(&env).unwrap(), pt);
+        let mut env_buf = vec![0_u8; pt.len() + TAG_SIZE + NONCE_SIZE];
+        let n = siv
+            .encrypt_nonce_appended_to(&NONCE, &pt, &mut env_buf)
+            .unwrap();
+        assert_eq!(n, env_buf.len());
+        assert_eq!(env_buf, env);
+        let mut out = vec![0_u8; pt.len()];
+        let m = siv.decrypt_nonce_appended_to(&env_buf, &mut out).unwrap();
+        assert_eq!(&out[..m], &pt[..]);
+
+        for prealloc in [0_usize, pt.len() + TAG_SIZE + NONCE_SIZE] {
+            let mut in_out = Vec::with_capacity(prealloc);
+            in_out.extend_from_slice(&pt);
+            siv.encrypt_nonce_appended_in_place(&NONCE, &mut in_out)
+                .unwrap();
+            assert_eq!(in_out, env);
+            assert_eq!(siv.decrypt_nonce_appended(&in_out).unwrap(), pt);
+        }
+
+        // generated-nonce envelope paths.
+        let mut out = vec![0_u8; pt.len() + TAG_SIZE + NONCE_SIZE];
+        let n = siv.encrypt_to(aad, &pt, &mut out).unwrap();
+        assert_eq!(n, out.len());
+        let mut dec = vec![0_u8; pt.len()];
+        let m = siv.decrypt_to(aad, &out, &mut dec).unwrap();
+        assert_eq!(&dec[..m], &pt[..]);
+        let g = siv.encrypt_nonce_appended_generated(&pt).unwrap();
+        assert_eq!(siv.decrypt_nonce_appended(&g).unwrap(), pt);
+        let (gn, gct) = siv.encrypt_with_generated_nonce(aad, &pt).unwrap();
+        assert_eq!(siv.decrypt_with_nonce(&gn, aad, &gct).unwrap(), pt);
+
+        // owned key state: the default envelope path round-trips too.
+        let mut owned2 = HardwareAes256GcmSivKeyState::new(&KEY).expect("valid key");
+        let e = owned2.encrypt(aad, &pt).unwrap();
+        assert_eq!(owned2.decrypt(aad, &e).unwrap(), pt);
+    }
+
+    /// `validate_siv_lengths` must reject an input exceeding the RFC 8452 2^36-byte
+    /// cap on *either* the AAD or the message - exercised with length values, no
+    /// allocation. Pins the `||` chain (mutation testing) and complements the Kani
+    /// harness, which `cargo test` does not run.
+    #[test]
+    fn siv_length_validation_rejects_each_over_limit() {
+        assert!(validate_siv_lengths(16, 16).is_ok());
+        if let Ok(over) = usize::try_from(MAX_SIV_LEN + 1) {
+            assert!(validate_siv_lengths(over, 16).is_err());
+            assert!(validate_siv_lengths(16, over).is_err());
+        }
+        if let Ok(lim) = usize::try_from(MAX_SIV_LEN) {
+            assert!(validate_siv_lengths(lim, lim).is_ok());
+        }
     }
 
     /// The SIV counter is a 32-bit little-endian counter in the low four bytes
