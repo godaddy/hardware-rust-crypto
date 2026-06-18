@@ -28,13 +28,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   determinism, tamper rejection, and decrypt-parser robustness on arbitrary
   bytes.
 - **Constant-time timing harnesses** (dudect) for both the GCM and SIV decrypt
-  paths (latest run, |t| threshold 25: GCM 1.59/2.50, SIV 0.15/0.52).
-- **Machine-checked proof suite** for the GHASH/POLYVAL core (`proofs/`, run by
-  the `formal-proof` CI job): over all inputs and faithful to the exact intrinsic
-  sequence (model pinned bit-for-bit to the running backend), the field multiply
-  is proven equal to RFC 8452 POLYVAL (exhaustive over the 128×128 basis), the
-  exact reductions are proven GF(2)-linear (reduce-once exact), and Horner ==
-  the batch sum-of-powers (symbolic).
+  paths, now **CI-gated** by the `constant-time` job (best-of-3 batches, fails the
+  build if Welch `|t| ≥ 25`; latest run ~0.4-2.4 vs ~267 for an early-exit leak).
+- **Machine-checked proof suite** for the GHASH/POLYVAL core and the GHASH
+  construction (`proofs/`, run by the `formal-proof` CI job): over all inputs and
+  faithful to the exact intrinsic sequence (model pinned bit-for-bit to the
+  running backend), the field multiply is proven equal to RFC 8452 POLYVAL
+  (exhaustive over the 128×128 basis, both architectures), the exact reductions
+  are proven GF(2)-linear (reduce-once exact), Horner == the batch sum-of-powers
+  (symbolic), and the crate's ByteReverse + mulX + POLYVAL construction is proven
+  equal to NIST SP 800-38D **GHASH** for every subkey and block count
+  (`prove_ghash_polyval_mapping.py`).
+- **Cross-architecture proof anchor** (`mul_reference_anchor`): the real backend
+  `imp::mul` is checked to reproduce the proof's reference vectors on each CI
+  architecture, so the x86 proof model is anchored to actual AES-NI/PCLMULQDQ
+  silicon, not only aarch64-captured output.
 - **Miri** runs the entire key-state lifecycle and the real AES/GHASH paths on
   x86 under its UB checker (a `cfg(miri)`-only software key schedule, proven
   byte-identical to hardware, covers the one intrinsic Miri lacks); **Valgrind**
