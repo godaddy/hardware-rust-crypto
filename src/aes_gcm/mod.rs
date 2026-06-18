@@ -1549,6 +1549,31 @@ pub(crate) fn increment_counter(counter: &mut [u8; 16]) {
     counter[12..].copy_from_slice(&low.to_be_bytes());
 }
 
+/// Stable-symbol `extern "C"` wrapper so the SAW LLVM-bitcode verifier can prove
+/// the *compiled* `increment_counter` matches its Cryptol spec (`proofs/saw/`).
+/// Build-time only; `saw-verify` is never a shipped feature.
+#[cfg(feature = "saw-verify")]
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn saw_increment_counter(counter: *mut u8) {
+    // SAFETY: SAW calls this with a valid, writable 16-byte buffer.
+    let c = unsafe { &mut *(counter.cast::<[u8; 16]>()) };
+    increment_counter(c);
+}
+
+/// Stable-symbol `extern "C"` wrapper around `j0` for SAW (`proofs/saw/`).
+/// Build-time only; never shipped.
+#[cfg(feature = "saw-verify")]
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn saw_j0(nonce: *const u8, out: *mut u8) {
+    // SAFETY: SAW calls this with a readable 12-byte `nonce` and writable 16-byte `out`.
+    let n = unsafe { &*(nonce.cast::<[u8; NONCE_SIZE]>()) };
+    let block = j0(n);
+    // SAFETY: `out` is a writable 16-byte buffer.
+    unsafe { core::ptr::copy_nonoverlapping(block.as_ptr(), out, 16) };
+}
+
 fn constant_time_eq(expected: &[u8; TAG_SIZE], actual: &[u8]) -> bool {
     // subtle's slice impl compares lengths first (length is public) and then
     // the contents in constant time behind optimization barriers, so the

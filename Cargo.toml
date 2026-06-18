@@ -47,6 +47,10 @@ hazmat-explicit-nonce = []
 # and check they compile to branch-free, data-oblivious code. Build-time only;
 # never part of the shipped library.
 ct-verify = []
+# Emits `extern "C"` wrappers with stable symbols around pure composition
+# functions so the SAW (Galois) LLVM-bitcode verifier can prove the *compiled*
+# code matches a Cryptol spec (proofs/saw/). Build-time only; never shipped.
+saw-verify = []
 
 [dependencies]
 # getrandom supplies OS entropy for seeding and for the 96-bit nonce salt; it

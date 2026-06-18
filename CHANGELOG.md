@@ -59,6 +59,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **SAW proofs over the compiled LLVM bitcode** (`proofs/saw/`): SAW (Galois)
+  verifies rustc's LLVM bitcode for `increment_counter` and `j0` against a Cryptol
+  spec (SP 800-38D `inc_32` and `J0 = IV‖0³¹‖1`) — a third independent
+  verification toolchain (its own Z3/Yices/CVC/ABC solvers) corroborating the Z3
+  model proofs and the Kani/CBMC compiled-code proofs. Build-time-only
+  `saw-verify` feature emits the `extern "C"` wrappers; SAW is the route to later
+  proving the AES-calling composition by axiomatizing the intrinsics.
 - **Mutation testing** (`cargo-mutants`, `docs/mutation-testing.md`, in the
   `heavy-assurance` workflow): validates that the test suite actually catches
   injected bugs in the GCM composition and the nonce generator (319 mutants,
