@@ -242,8 +242,10 @@ jobs:
       # the field multiply == RFC 8452 POLYVAL (exhaustive basis), the exact
       # reductions are GF(2)-linear (reduce-once is exact), the Horner recurrence
       # == the batch sum-of-powers, and the ByteReverse+mulX+POLYVAL construction
-      # == NIST SP 800-38D GHASH. The model is pinned bit-for-bit to the real
-      # backend. See proofs/README.md and docs/assurance.md 2.1.
+      # == NIST SP 800-38D GHASH. Plus prove_composition.py: the intrinsic-free
+      # AEAD glue (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt) ==
+      # SP 800-38D / RFC 8452 with AES/authenticator as oracles. The models are
+      # pinned to the real backend. See proofs/README.md and docs/assurance.md 2.1-2.2.
       - name: Run the machine-checked proof suite
         run: ./proofs/run_all.sh
 

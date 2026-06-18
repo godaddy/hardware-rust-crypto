@@ -15,6 +15,7 @@ pinned bit-for-bit to the running code before any proof is trusted.
 | `prove_aggregation.py` | The exact `mont_reduce ∘ karatsuba2` (aarch64) and `reduce` (x86) are GF(2)-linear ⇒ the batch path "fold the partials, reduce once" equals the per-block reduction. | Z3 SMT, closed universally-quantified query | Complete |
 | `prove_ghash_identity.py` | The per-block Horner recurrence == the sum-of-powers form the batch path computes. | Symbolic expansion over a commutative ring (sympy) | Complete |
 | `prove_ghash_polyval_mapping.py` | The crate's `ByteReverse` + `mulX` + POLYVAL construction == NIST SP 800-38D **GHASH**, for all subkeys and block counts. | Single-block mapping `gmul(X,H) == R(dot(R(X),mulX(R(H))))` is bilinear ⇒ exhaustive on all 128x128 basis pairs; the multi-block lift needs only that plus `ByteReverse` being a linear involution (Horner induction). | Complete |
+| `prove_composition.py` | The intrinsic-free AEAD glue == SP 800-38D / RFC 8452, for all inputs: GCM `increment_counter` == `inc_32`; SIV counter == RFC LE32 increment; J0 and SIV key-derivation/tag layouts; and decryption inverts encryption and accepts genuine ciphertext (both modes). | Z3 SMT with AES and the authenticator as **uninterpreted functions** (their correctness comes from the other proofs + KATs); each model mirrors the named `mod.rs`/`siv.rs` function line for line; includes a non-vacuity check that a broken wiring is rejected. | Complete (modulo correct AES/authenticator) |
 
 Chained together: the field multiply computes the correct POLYVAL product
 (`prove_multiply`); folding the per-slot Karatsuba partials and reducing once
@@ -43,35 +44,40 @@ a failed vector before any proof runs.
 
 ## Scope
 
-These proofs cover the **GHASH/POLYVAL field arithmetic and the GHASH
-construction** (the novel, hand-built parts). They do **not** prove the AES block
-cipher itself; AES correctness is covered by FIPS-197 / NIST CAVP / RFC
+These proofs cover the **GHASH/POLYVAL field arithmetic**, the **GHASH
+construction**, and the **intrinsic-free composition glue** (J0/counter
+construction, the GCM and SIV counter increments, SIV key derivation and tag
+layout, and the decrypt-inverts-encrypt round-trip). They do **not** prove the
+AES block cipher itself; AES correctness is covered by FIPS-197 / NIST CAVP / RFC
 known-answer tests, and the `unsafe` memory handling by Miri and Valgrind (see
-`docs/assurance.md`). The rest of the AEAD composition (J0, the CTR keystream,
-the length block, the tag XOR; SIV key derivation and the SIV-CTR counter) is
-straight-line byte plumbing validated byte-for-byte by the NIST CAVP / RFC 8452 /
-Wycheproof known-answer suites and the RustCrypto/ring differential tests, not by
-these proofs - a full functional-correctness proof of that glue (hax/F\* or SAW)
-remains future work (see `docs/assurance.md` 2.2). **Both architectures are
-proven in full**: each exact intrinsic sequence (aarch64 `karatsuba`+`mont_reduce`,
-x86 `clmul_wide`+`reduce`) is modeled, anchored to the same captured backend
-output and to RFC 8452, and basis-proven equal to POLYVAL `dot`, with both
-reductions proven GF(2)-linear.
+`docs/assurance.md`). `prove_composition.py` treats AES and the authenticator as
+uninterpreted oracles, so it proves the *wiring* is the specification given
+correct primitives; it is a hand-translated model of the `mod.rs`/`siv.rs`
+functions (anchored to the real code by the NIST CAVP / RFC 8452 C.2 end-to-end
+KATs and the `increment_counter` / `counter_wraps_*` unit tests), not a tool that
+extracts the compiled Rust. A full extraction-based functional-correctness proof
+(hax/F\* or SAW) that removes the hand-translation trust step remains future work
+(see `docs/assurance.md` 2.2). **Both architectures are proven in full**: each
+exact intrinsic sequence (aarch64 `karatsuba`+`mont_reduce`, x86
+`clmul_wide`+`reduce`) is modeled, anchored to the same captured backend output
+and to RFC 8452, and basis-proven equal to POLYVAL `dot`, with both reductions
+proven GF(2)-linear.
 
 ## Reproduce
 
 ```sh
 pip install z3-solver sympy
-./proofs/run_all.sh           # runs all five; exits non-zero on any failure
+./proofs/run_all.sh           # runs all six; exits non-zero on any failure
 # or individually:
 python3 proofs/field_model.py
 python3 proofs/prove_multiply.py
 python3 proofs/prove_aggregation.py
 python3 proofs/prove_ghash_identity.py
 python3 proofs/prove_ghash_polyval_mapping.py
+python3 proofs/prove_composition.py
 ```
 
 Run on every build by the `formal-proof` CI job (`.github/workflows/ci.yml`).
 `prove_multiply.py` takes ~1-2 minutes (the exhaustive basis sweep);
-`prove_ghash_polyval_mapping.py` a few seconds (its two 128x128 sweeps); the
-others are seconds.
+`prove_ghash_polyval_mapping.py` a few seconds (its two 128x128 sweeps);
+`prove_composition.py` and the others are seconds.

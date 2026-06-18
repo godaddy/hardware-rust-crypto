@@ -13,4 +13,6 @@ echo "==> prove_ghash_identity.py   (Horner == sum-of-powers)"
 python3 prove_ghash_identity.py
 echo "==> prove_ghash_polyval_mapping.py   (ByteReverse+mulX+POLYVAL == GHASH)"
 python3 prove_ghash_polyval_mapping.py
+echo "==> prove_composition.py   (J0/counter/SIV-derivation/tag/round-trip == spec)"
+python3 prove_composition.py
 echo "==> ALL PROOFS PASSED"
