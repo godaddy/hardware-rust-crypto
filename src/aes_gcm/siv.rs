@@ -1117,3 +1117,142 @@ impl std::fmt::Debug for HardwareAes256GcmSivIn<'_> {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+    use super::{
+        build_message_cipher, ctr_apply, derive_keys, increment_siv_counter, polyval_digest, aes,
+        AES_BLOCK_SIZE, NONCE_SIZE,
+    };
+
+    fn cipher() -> aes::Aes256 {
+        build_message_cipher(&[0x42_u8; 32]).expect("hardware AES available in tests")
+    }
+
+    /// The SIV counter is a 32-bit little-endian counter in the low four bytes
+    /// only; it must wrap mod 2^32 and never carry into the remaining twelve
+    /// bytes (which carry the high bits of the tag, including the 0x80 marker).
+    #[test]
+    fn counter_wraps_low_32_bits_only() {
+        let mut counter = [0_u8; AES_BLOCK_SIZE];
+        counter[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        counter[8] = 0xAB;
+        counter[AES_BLOCK_SIZE - 1] = 0x80;
+
+        increment_siv_counter(&mut counter);
+
+        assert_eq!(&counter[..4], &0_u32.to_le_bytes(), "low 32 bits must wrap to 0");
+        assert_eq!(counter[8], 0xAB, "high bytes must be preserved");
+        assert_eq!(counter[AES_BLOCK_SIZE - 1], 0x80, "0x80 marker must be preserved");
+    }
+
+    #[test]
+    fn counter_increments_without_carry_into_high_bytes() {
+        let mut counter = [0_u8; AES_BLOCK_SIZE];
+        counter[..4].copy_from_slice(&0x00FF_FFFF_u32.to_le_bytes());
+        counter[4] = 0x99; // first high byte; must never change
+        increment_siv_counter(&mut counter);
+        assert_eq!(&counter[..4], &0x0100_0000_u32.to_le_bytes());
+        assert_eq!(counter[4], 0x99);
+    }
+
+    /// Deterministic end-to-end exercise of the 32-bit counter wrap through the
+    /// real hardware AES: a five-block CTR pass started two below the boundary
+    /// crosses 0xFFFFFFFF -> 0x00000000. Compared against an independent
+    /// block-by-block CTR built from `encrypt_block`.
+    #[test]
+    fn ctr_apply_matches_blockwise_across_32bit_wrap() {
+        let cipher = cipher();
+
+        let mut start = [0_u8; AES_BLOCK_SIZE];
+        start[..4].copy_from_slice(&0xFFFF_FFFE_u32.to_le_bytes());
+        start[4..].copy_from_slice(&[0x11_u8; 12]);
+        start[AES_BLOCK_SIZE - 1] = 0x80;
+
+        let plaintext = [0xA5_u8; AES_BLOCK_SIZE * 5];
+
+        // Independent reference CTR: counters 0xFFFFFFFE, 0xFFFFFFFF,
+        // 0x00000000, 0x00000001, 0x00000002 with the high bytes fixed.
+        let mut expected = plaintext;
+        let mut ctr = 0xFFFF_FFFE_u32;
+        for block in expected.chunks_mut(AES_BLOCK_SIZE) {
+            let mut keystream = start;
+            keystream[..4].copy_from_slice(&ctr.to_le_bytes());
+            cipher.encrypt_block(&mut keystream);
+            for (byte, key_byte) in block.iter_mut().zip(keystream.iter()) {
+                *byte ^= key_byte;
+            }
+            ctr = ctr.wrapping_add(1);
+        }
+
+        let mut got = plaintext;
+        let mut counter = start;
+        ctr_apply(&cipher, &mut counter, &mut got);
+
+        assert_eq!(got, expected, "CTR output must match across the wrap");
+        // 0xFFFFFFFE + 5 = 0x1_0000_0003 -> low 32 bits = 3, high bytes intact.
+        assert_eq!(&counter[..4], &3_u32.to_le_bytes());
+        assert_eq!(&counter[4..], &start[4..]);
+    }
+
+    /// The 8-way batch path and the serial tail must agree: a length that is
+    /// neither block- nor batch-aligned still round-trips (CTR is its own
+    /// inverse) and actually transforms the data.
+    #[test]
+    fn ctr_apply_batch_and_tail_round_trip() {
+        let cipher = cipher();
+        let plaintext = [0x5A_u8; AES_BLOCK_SIZE * 9 + 7]; // one 8-block batch + 1 block + 7 bytes
+
+        let mut data = plaintext;
+        let mut counter = [0_u8; AES_BLOCK_SIZE];
+        counter[AES_BLOCK_SIZE - 1] = 0x80;
+        ctr_apply(&cipher, &mut counter, &mut data);
+        assert_ne!(data, plaintext, "CTR must transform the data");
+
+        let mut counter = [0_u8; AES_BLOCK_SIZE];
+        counter[AES_BLOCK_SIZE - 1] = 0x80;
+        ctr_apply(&cipher, &mut counter, &mut data);
+        assert_eq!(data, plaintext, "applying CTR twice must restore the input");
+    }
+
+    /// Key derivation is a deterministic function of (key, nonce): the same
+    /// inputs yield the same keys, and changing only the nonce changes both
+    /// derived keys.
+    #[test]
+    fn derive_keys_is_deterministic_and_nonce_dependent() {
+        let master = cipher();
+        let nonce_a = [0x07_u8; NONCE_SIZE];
+        let mut nonce_b = nonce_a;
+        nonce_b[0] ^= 1;
+
+        let (auth_a, enc_a) = derive_keys(&master, &nonce_a);
+        let (auth_a2, enc_a2) = derive_keys(&master, &nonce_a);
+        assert_eq!(auth_a, auth_a2);
+        assert_eq!(enc_a, enc_a2);
+
+        let (auth_b, enc_b) = derive_keys(&master, &nonce_b);
+        assert_ne!(auth_a, auth_b, "auth key must depend on the nonce");
+        assert_ne!(enc_a, enc_b, "encryption key must depend on the nonce");
+    }
+
+    /// POLYVAL over the message is deterministic and sensitive to both AAD and
+    /// message content.
+    #[test]
+    fn polyval_digest_is_deterministic_and_input_sensitive() {
+        let auth_key = [0x33_u8; 16];
+        let aad = b"metadata";
+        let message = b"the quick brown fox";
+
+        let d1 = polyval_digest(&auth_key, aad, message).expect("hardware");
+        let d2 = polyval_digest(&auth_key, aad, message).expect("hardware");
+        assert_eq!(d1, d2);
+
+        let d_aad = polyval_digest(&auth_key, b"metadatb", message).expect("hardware");
+        assert_ne!(d1, d_aad, "digest must depend on AAD");
+
+        let d_msg = polyval_digest(&auth_key, aad, b"the quick brown FOX").expect("hardware");
+        assert_ne!(d1, d_msg, "digest must depend on the message");
+    }
+}
