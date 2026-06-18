@@ -2061,8 +2061,8 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::{
-        increment_counter, j0, nonce_from_slice, validate_gcm_lengths, Error, MAX_GCM_DATA_LEN,
-        MAX_GHASH_INPUT_LEN, NONCE_SIZE,
+        constant_time_eq, increment_counter, j0, nonce_from_slice, validate_gcm_lengths, Error,
+        MAX_GCM_DATA_LEN, MAX_GHASH_INPUT_LEN, NONCE_SIZE, TAG_SIZE,
     };
 
     /// The compiled `increment_counter` is exactly SP 800-38D `inc_32`: the
@@ -2113,5 +2113,22 @@ mod kani_proofs {
             Ok(n) => assert!(len == NONCE_SIZE && n.len() == NONCE_SIZE),
             Err(e) => assert!(len != NONCE_SIZE && matches!(e, Error::InvalidNonceLength)),
         }
+    }
+
+    /// The authentication decision is functionally exact: for equal-length
+    /// inputs `constant_time_eq` is bytewise equality. (Constant-*time*-ness is
+    /// covered separately by the dudect harnesses; this proves *correctness* -
+    /// that the masking/folding never accepts a wrong tag or rejects a right one.)
+    /// Verified over all tag-pairs.
+    ///
+    /// Only the equal-length case is model-checked: callers always pass a
+    /// `TAG_SIZE` slice (`split_ciphertext_tag`/the decrypt split are proven to
+    /// hand over exactly `TAG_SIZE` bytes), and `subtle`'s variable-length slice
+    /// loop does not bound under CBMC.
+    #[kani::proof]
+    fn constant_time_eq_equals_bytewise_equality() {
+        let expected: [u8; TAG_SIZE] = kani::any();
+        let actual: [u8; TAG_SIZE] = kani::any();
+        assert!(constant_time_eq(&expected, &actual) == (expected == actual));
     }
 }
