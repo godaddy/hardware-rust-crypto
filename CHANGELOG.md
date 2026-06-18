@@ -59,6 +59,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **Generated-nonce uniqueness proof** (`nonce_value_is_injective_in_counter`,
+  cfg(kani)): Kani/CBMC proves the compiled `nonce = (base + counter) mod 2^96`
+  arithmetic is injective in the counter over the full 2^64 sequence for every
+  base, so the generated-nonce path cannot reuse a nonce within an instance
+  (machine-checking the core of the GCM nonce-reuse mitigation; HRC-2026-01).
+  The arithmetic was factored into a `nonce_value` helper to make it checkable.
 - **AES S-box proof** (`aes_sbox_is_fips197_affine_inverse` test): the shipped
   `AES_SBOX` constant is proven to be the genuine FIPS-197 S-box —
   `affine(inverse_GF(2^8)(x))` — for all 256 inputs, and a bijection, ruling out
