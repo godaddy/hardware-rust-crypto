@@ -65,6 +65,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   both RustCrypto (pure Rust) and `ring` (BoringSSL heritage), so agreement
   across all three rules out a shared specification-level bug. OpenSSL is a
   vendored-build dev-dependency, never in the production dependency graph.
+- **crux-mir proofs over Rust MIR** (`proofs/crux-mir/`): brings up the
+  mir-json + crux-mir (Galois) toolchain (schema-8 mir-json to match SAW 1.5.1)
+  and proves `increment_counter` == SP 800-38D `inc_32` over the MIR - a fourth
+  independent toolchain (Z3, Kani/CBMC, SAW-LLVM, crux-mir) corroborating the
+  same property, at the MIR level (no LLVM poison). A probe (`clmul_probe.rs`)
+  establishes that crux-mir, like SAW-LLVM, does NOT model the PMULL/PCLMULQDQ
+  carryless-multiply intrinsic - so the hardware SIMD crypto must be axiomatized
+  for any source-level proof, which is exactly why the field arithmetic is proven
+  via a model anchored to the captured real backend output (`field_model.py`).
 - **SAW field-multiply bilinearity (target, tool-blocked)** (`proofs/saw/field_bilinearity.saw`): residual harnesses (`saw_field_mul_*`, `saw-verify`
   feature) encode a SAW proof that the compiled PCLMULQDQ field multiply is
   GF(2)-bilinear and commutative - reaching *through* the intrinsic. Currently
