@@ -368,6 +368,7 @@ dependencies = [
  "rand_chacha",
  "ring",
  "salsa20",
+ "serde_json",
  "subtle",
  "zeroize",
 ]
