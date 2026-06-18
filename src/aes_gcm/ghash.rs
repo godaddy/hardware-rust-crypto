@@ -403,6 +403,36 @@ fn mulx(block: &[u8; 16]) -> [u8; 16] {
     v.to_le_bytes()
 }
 
+/// Non-inlined wrapper so the constant-time verifier can disassemble `mulx` as a
+/// named symbol and confirm its carry fold compiles branch-free (see
+/// `proofs/constant-time/verify.sh`). Build-time only; `ct-verify` is never a
+/// shipped feature.
+#[cfg(feature = "ct-verify")]
+#[inline(never)]
+#[must_use]
+pub fn ct_verify_mulx(block: &[u8; 16]) -> [u8; 16] {
+    mulx(core::hint::black_box(block))
+}
+
+/// NON-VACUITY CONTROL for the constant-time verifier. This is a deliberately
+/// **leaky** byte comparison - an early-return on a secret-dependent mismatch,
+/// the classic timing oracle - that `proofs/constant-time/verify.sh` must
+/// *reject*. It proves the check has teeth (it would catch a real regression).
+/// Never used by the crate; `ct-verify` is never shipped.
+#[cfg(feature = "ct-verify")]
+#[inline(never)]
+#[must_use]
+pub fn ct_verify_leaky_control(a: &[u8; 16], b: &[u8; 16]) -> bool {
+    let mut i = 0;
+    while i < 16 {
+        if core::hint::black_box(a[i]) != core::hint::black_box(b[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 #[cfg(target_arch = "aarch64")]
 mod imp {
     use super::volatile_zero;

@@ -67,7 +67,8 @@ instruction) are at T3.
 | Full AES-256-GCM/SIV key-state lifecycle + real AES/GHASH paths are UB-free (aliasing, provenance, OOB, uninit) | T1 | Miri on x86 (incl. the unsafe envelope-trailer write `append_tag_nonce`) | `cargo miri test --lib aes_gcm` |
 | Native intrinsic binary is memory-clean | T4 | Valgrind memcheck + ASan; TSan on cross-thread paths | CI |
 | Decrypt parser never panics / no UB on arbitrary bytes | T1+T4 | Kani (splitters) + fuzz + proptest | `kani_proofs`, `fuzz/`, `tests/proptest_aead.rs` |
-| Decrypt paths constant-time (data-independent) | T4 | dudect Welch t-test, **CI-gated** (`\|t\| < 25`, best-of-3) | `constant-time` CI job |
+| The two scalar secret ops (`constant_time_eq`, `mulx`) are branch-free over secret inputs | T1 | **`objdump` of the shipped binary** — no conditional branch after a secret-byte load; non-vacuity control rejected | `proofs/constant-time/verify.sh` |
+| Decrypt paths constant-time (data-independent, end to end) | T4 | dudect Welch t-test, **CI-gated** (`\|t\| < 25`, best-of-3) | `constant-time` CI job |
 | No third-party cipher in the production graph; advisories/licenses clean | T4 | CI-enforced graph check + `cargo audit` + `cargo deny` | CI, `deny.toml` |
 | RNG output quality | T4 | monobit/chi-square/serial-correlation + PractRand/dieharder procedure | `tests/rng_statistical.rs`, `docs/randomness-testing.md` |
 
