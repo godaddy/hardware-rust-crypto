@@ -573,8 +573,8 @@ zeroization in Rust and is not specific to this library.
 | **Exploitability** | Low (dense differential corpus already exercises boundaries) |
 | **CVSS 3.1** | N/A (test-coverage gap) |
 | **Category** | Testing / assurance |
-| **Status** | Open |
-| **Location** | `tests/aes_gcm_interop.rs`; `src/aes_gcm/ghash.rs` |
+| **Status** | Partially resolved (2026-06-18) - Wycheproof integrated; property-based and formal checks remain |
+| **Location** | `tests/aes_gcm_interop.rs`; `tests/wycheproof_aes_gcm.rs`; `tests/wycheproof_aes_gcm_siv.rs`; `src/aes_gcm/ghash.rs` |
 
 **Description.** The 8-block aggregated GHASH reduction (section 7.2) is novel
 relative to the per-block upstream POLYVAL and is the most intricate arithmetic
@@ -602,6 +602,16 @@ exclude one.
 **Recommendation.** Integrate Project Wycheproof AES-GCM vectors and add
 property-based (`proptest`) round-trip and decrypt-parser tests. Consider a
 formal or computer-algebra check of the aggregation identity (section 7.2).
+
+**Update (2026-06-18).** Project Wycheproof vectors are now integrated and pass:
+`tests/wycheproof_aes_gcm.rs` runs the 66 AES-256 / 96-bit-IV / 128-bit-tag
+cases (39 valid, 27 `ModifiedTag` rejection), and `tests/wycheproof_aes_gcm_siv.rs`
+runs the 103 AES-256-GCM-SIV cases (69 valid, 34 rejection, 5 `WrappedIv`
+counter-wrap). The vector files are vendored verbatim (Apache-2.0, dev-only;
+`NOTICE`). The aggregated-reduction boundaries now have authoritative
+third-party coverage in addition to the dense differential corpus. Residual:
+property-based/fuzz testing of the decrypt parser and a formal/computer-algebra
+proof of the aggregation identity are still open.
 
 ---
 
@@ -944,6 +954,26 @@ single-byte tamper coverage; lifecycle tests (fork, wipe, threading).
 decrypt parser (A1 surface); Miri (HRC-2026-04); `x86_64` hardware-path
 execution depends on CI runners exposing AES-NI/RDSEED.
 
+**Update (2026-06-18) - AES-256-GCM-SIV added and coverage expanded.** Since the
+reviewed commit the crate gained an AES-256-GCM-SIV (RFC 8452) implementation
+(`src/aes_gcm/siv.rs`) with its own test surface, and the GCM suite was expanded
+to match. This code post-dates the review and has not been independently
+audited; its current automated coverage is:
+
+| Suite | Tests | Coverage |
+| --- | ---: | --- |
+| `aes_gcm::tests` (unit) | 25 | length/limit, layout, placement, wipe-on-drop, thread sharing, caller-buffer paths, generated-nonce round-trip/uniqueness |
+| `aes_gcm::siv::tests` (unit, white-box) | 6 | mod-2^32 CTR counter wrap, CTR vs block-wise reference, key derivation determinism, POLYVAL determinism |
+| `aes_gcm_interop` | 11 | RustCrypto/ring differential + cross-decrypt, NIST KAT, multi-size single-bit tamper, wrong key/nonce/AAD, dense plaintext + AAD sweeps |
+| `aes_gcm_siv_interop` | 18 | RFC 8452 KAT (dual-asserted), RustCrypto differential + cross-decrypt, determinism, multi-size tamper, wrong key/nonce/AAD, error paths, decrypt-zeroize, dense plaintext + AAD sweeps |
+| `wycheproof_aes_gcm` | 66 vectors | Project Wycheproof AES-256-GCM (39 valid, 27 rejection) |
+| `wycheproof_aes_gcm_siv` | 103 vectors | Project Wycheproof AES-256-GCM-SIV (69 valid, 34 rejection, 5 counter-wrap) |
+| `timing_constant_time` / `_siv` | 2 + 2 (ignored) | dudect harnesses for the GCM and SIV decrypt paths |
+
+This closes the Wycheproof gap (HRC-2026-08) for both modes. Remaining gaps are
+unchanged: property/fuzz testing of the decrypt parser, Miri (HRC-2026-04), and
+`x86_64` hardware-path execution on CI runners.
+
 ---
 
 ## 12. Standards conformance matrix
@@ -955,7 +985,8 @@ review and differential/known-answer testing; **not** accredited validation.
 | --- | --- | --- |
 | FIPS 197 | AES-256 cipher and key schedule | Conforms (reviewed; KAT) |
 | NIST SP 800-38A | CTR mode | Conforms (reviewed) |
-| NIST SP 800-38D | AES-GCM, GHASH, J0, length limits | Conforms (reviewed; KAT + differential) |
+| NIST SP 800-38D | AES-GCM, GHASH, J0, length limits | Conforms (reviewed; KAT + differential + Wycheproof) |
+| RFC 8452 | AES-256-GCM-SIV, POLYVAL, key derivation | Conforms (KAT + differential + Wycheproof; **added post-audit**, not independently reviewed) |
 | RFC 5116 / 5288 | AEAD interface; 96-bit GCM nonce | Conforms (reviewed) |
 | NIST SP 800-90A Rev. 1 | CTR_DRBG | Modeled on; **not** conformant/validated (section 7.4) |
 | NIST SP 800-90B | Entropy source health tests | Partial; stuck-output only (section 7.5, HRC-2026-03) |
@@ -976,7 +1007,7 @@ review and differential/known-answer testing; **not** accredited validation.
 | Latent `unsafe` UB | Low | Critical | Review + differential corpus | HRC-2026-04 - not Miri-proven |
 | Transient-execution leak of cache tier | Low-Med | High | Out of scope by design | Documented limitation |
 | Upstream vuln in vendored code | Low | Medium | Copied + attributed | Manual re-sync needed |
-| Aggregated-GHASH latent defect | Low | High | Boundary-dense differential corpus | HRC-2026-08 - not formally proven |
+| Aggregated-GHASH/POLYVAL latent defect | Low | High | Boundary-dense differential corpus + Project Wycheproof vectors (GCM and SIV) | HRC-2026-08 - Wycheproof now integrated; not formally proven |
 
 ---
 

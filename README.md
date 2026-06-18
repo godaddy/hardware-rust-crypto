@@ -191,14 +191,30 @@ degrading.
    attack surface does not exist in this code because the S-box never touches
    memory. Tag comparison is constant-time via the `subtle` crate. The Rust
    glue performs no secret-dependent branching or indexing.
-2. **Wire-format compatibility is proven, not assumed.** The test suite shows
-   the candidate produces byte-identical AES-256-GCM ciphertext to RustCrypto
-   `aes-gcm`, cross-decrypts in both directions with both `aes-gcm` and
-   `ring`, matches NIST known-answer vectors, survives a randomized
-   differential sweep across plaintext/AAD size combinations, and rejects
-   every single-byte tampering of ciphertext, tag, nonce, and AAD. The
-   AES-CTR generator is checked against FIPS-197 vectors independently
-   verified with OpenSSL.
+2. **Wire-format compatibility is proven, not assumed.** Both AEAD modes are
+   held to the same bar:
+   - **AES-256-GCM** produces byte-identical ciphertext to RustCrypto `aes-gcm`,
+     cross-decrypts in both directions with both `aes-gcm` and `ring`, matches
+     NIST SP 800-38D known-answer vectors, and passes the **Project Wycheproof**
+     AES-256-GCM suite (66 vectors: 39 valid, 27 tag-rejection).
+   - **AES-256-GCM-SIV** matches the **RFC 8452 Appendix C.2** known-answer
+     vectors, byte-matches RustCrypto `aes-gcm-siv`, and passes the **Project
+     Wycheproof** AES-256-GCM-SIV suite (103 vectors, including 5 counter-wrap
+     and 34 tag-rejection cases).
+   - Both survive randomized differential sweeps and dense length sweeps across
+     plaintext *and* AAD sizes (every length 0..=288 across the GHASH/POLYVAL
+     aggregation seams), reject every single-bit tampering of ciphertext, tag,
+     nonce, and AAD across many sizes, and reject wrong key / nonce / AAD over
+     hundreds of random trials.
+   - Both decrypt paths carry **dudect-style constant-time timing harnesses**
+     (Welch t-test): tag-comparison timing is independent of mismatch position
+     and decrypt timing is independent of ciphertext content (`|t|` far below
+     threshold for both modes; see [docs/constant-time.md](docs/constant-time.md)).
+   - The AES-CTR generator is checked against FIPS-197 vectors independently
+     verified with OpenSSL.
+   - Wycheproof vectors are vendored verbatim (downloaded, not transcribed;
+     Apache-2.0, see `NOTICE`) and are dev-only - absent from the production
+     dependency graph.
 3. **Hardware support is verified, never guessed.** Construction checks CPU
    features at runtime and returns `UnsupportedCpu` before accepting key
    material, and CI asserts the hardware paths are actually exercised so a
