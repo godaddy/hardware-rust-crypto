@@ -59,6 +59,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **Binary-level constant-time verification** (`proofs/constant-time/verify.sh`,
+  in the `constant-time` CI job): disassembles the two scalar secret-handling
+  functions — the tag comparison (`constant_time_eq`) and the GHASH `mulX` carry
+  fold (`mulx`) — and fails the build unless they compile **branch-free over
+  their secret inputs** (`mulx` has no conditional branch; `constant_time_eq` has
+  none after the first secret-byte load — its only branch is the public length
+  check). Includes a non-vacuity control (a deliberately leaky comparison that
+  must be rejected). Upgrades the constant-time claim for the scalar secret
+  surface from statistical (dudect) to a checkable property of the shipped
+  machine code. New build-time-only `ct-verify` feature emits the named wrappers.
 - **First checked F\* proof over hax-extracted source** (`proofs/fstar/HrcComposition.fst`,
   `check.sh`): F\* proves `j0` places the GCM pre-counter byte and
   `increment_counter` preserves the leading 96 bits (the SP 800-38D `inc_32`

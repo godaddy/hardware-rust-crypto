@@ -41,6 +41,12 @@ cpu-rng-reseed = []
 # catastrophic. Prefer the default envelope API, which generates nonces and
 # appends them to ciphertext.
 hazmat-explicit-nonce = []
+# Emits `#[inline(never)]` wrappers around the two scalar secret-handling
+# functions (the tag comparison and the GHASH mulX carry fold) so the
+# constant-time verifier (proofs/constant-time/verify.sh) can disassemble them
+# and check they compile to branch-free, data-oblivious code. Build-time only;
+# never part of the shipped library.
+ct-verify = []
 
 [dependencies]
 # getrandom supplies OS entropy for seeding and for the 96-bit nonce salt; it

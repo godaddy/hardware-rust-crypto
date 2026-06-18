@@ -27,6 +27,12 @@ mod ghash;
 mod nonce;
 mod siv;
 
+/// Re-exported only under `ct-verify` so the constant-time verifier can reach
+/// the `mulx` wrapper and its non-vacuity control as public symbols; not part of
+/// the shipped API.
+#[cfg(feature = "ct-verify")]
+pub use ghash::{ct_verify_leaky_control, ct_verify_mulx};
+
 pub use siv::{
     HardwareAes256GcmSiv, HardwareAes256GcmSivIn, HardwareAes256GcmSivKeyState,
     SivUninitKeyStateSlot,
@@ -1549,6 +1555,20 @@ fn constant_time_eq(expected: &[u8; TAG_SIZE], actual: &[u8]) -> bool {
     // compiler cannot reintroduce an early-exit byte comparison. This is the
     // one place in the crate where secret-derived values are compared.
     expected.as_slice().ct_eq(actual).into()
+}
+
+/// Non-inlined wrapper so the constant-time verifier can disassemble the tag
+/// comparison as a named symbol and confirm it compiles branch-free, with the
+/// loop length fixed to `TAG_SIZE` (see `proofs/constant-time/verify.sh`).
+/// Build-time only; `ct-verify` is never a shipped feature.
+#[cfg(feature = "ct-verify")]
+#[inline(never)]
+#[must_use]
+pub fn ct_verify_constant_time_eq(expected: &[u8; TAG_SIZE], actual: &[u8; TAG_SIZE]) -> bool {
+    constant_time_eq(
+        core::hint::black_box(expected),
+        core::hint::black_box(actual.as_slice()),
+    )
 }
 
 #[cfg(test)]
