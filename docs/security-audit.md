@@ -319,7 +319,11 @@ reuse one accidentally. The construction is `nonce = (salt + counter) mod
 uniqueness is guaranteed; across instances the residual is a sub-random 96-bit
 base-range overlap. This *prevents* reuse but, being plain AES-GCM, does not
 *survive* it - a call site that cannot trust local nonce state still needs a
-misuse-resistant mode.
+misuse-resistant mode. The "within an instance uniqueness is guaranteed" claim
+is now **machine-checked**: a `cfg(kani)` harness
+(`nonce_value_is_injective_in_counter`) proves with Kani/CBMC that the compiled
+`nonce_value(base, counter)` is injective in `counter` over the full `2^64`
+sequence for every base, so the per-call counter walk cannot reuse a nonce.
 
 **Recommendation.**
 1. Keep caller-supplied-nonce helpers out of the default API and public
@@ -1064,7 +1068,7 @@ audited; its current automated coverage is:
 | `rng_statistical` | 3 | monobit / chi-square / serial-correlation sanity (PractRand/dieharder procedure in `docs/randomness-testing.md`) |
 | `fuzz/` | 4 targets | differential vs RustCrypto + decrypt-parser robustness (no panic / no UB), both modes |
 | `proofs/` | 7 proofs | machine-checked for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; ByteReverse+mulX+POLYVAL == NIST SP 800-38D GHASH; (Z3, AES/authenticator as oracles) the composition glue == SP 800-38D / RFC 8452 (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt); and the GHASH input framing (padding, length block, length limits) == spec |
-| `cfg(kani)` harnesses | 9 | **Kani/CBMC over the compiled Rust** (`kani` CI job): GCM/SIV counter increments == spec increments, J0 layout, length validation, nonce parser, both envelope splitters never panic / split correctly, and `constant_time_eq` == bytewise equality on equal-length tags, over all inputs (bounded where noted) |
+| `cfg(kani)` harnesses | 10 | **Kani/CBMC over the compiled Rust** (`kani` CI job): GCM/SIV counter increments == spec increments, J0 layout, length validation, nonce parser, both envelope splitters never panic / split correctly, `constant_time_eq` == bytewise equality on equal-length tags, and the generated-nonce arithmetic is injective in the counter, over all inputs (bounded where noted) |
 | `timing_constant_time` / `_siv` | 2 + 2 | dudect harnesses for the GCM and SIV decrypt paths, **CI-gated** (`constant-time` job, best-of-3, `\|t\| < 25`) |
 
 This resolves the Wycheproof and formal-proof gap (HRC-2026-08) for both modes
