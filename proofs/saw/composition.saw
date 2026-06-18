@@ -1,0 +1,45 @@
+// SAW (Galois) proof that the *compiled* crate matches its specification.
+//
+// Unlike the Z3/Kani proofs (which reason about a Python model, or compiled Rust
+// via CBMC), SAW verifies the LLVM bitcode emitted by rustc against a Cryptol
+// specification - an independent toolchain (SAW + Cryptol + Z3/Yices/ABC over
+// LLVM) corroborating the same properties. SAW can also reach *through* the
+// hardware intrinsics by axiomatizing them, which is why it is the route to
+// proving the AES-calling composition that hax cannot ingest (future work).
+//
+// Here it proves the two pure composition functions against their NIST specs.
+// The bitcode path `BITCODE_PATH` is substituted by proofs/saw/run.sh.
+
+m <- llvm_load_module "BITCODE_PATH";
+
+// --- increment_counter == SP 800-38D inc_32 -------------------------------
+// inc_32: big-endian increment of the trailing 4 bytes (mod 2^32); the leading
+// 12 bytes are unchanged.
+let inc32 =
+  {{ \(c : [16][8]) -> (take`{12} c) # (split`{4} (((join (drop`{12} c)) : [32]) + 1)) }};
+
+let inc_spec = do {
+  p <- llvm_alloc (llvm_array 16 (llvm_int 8));
+  c <- llvm_fresh_var "c" (llvm_array 16 (llvm_int 8));
+  llvm_points_to p (llvm_term c);
+  llvm_execute_func [p];
+  llvm_points_to p (llvm_term {{ inc32 c }});
+};
+llvm_verify m "saw_increment_counter" [] true inc_spec z3;
+print "SAW: saw_increment_counter == SP 800-38D inc_32 (compiled code)";
+
+// --- j0 == IV || 0^31 || 1 (96-bit nonce pre-counter block) ----------------
+let j0_spec_fn = {{ \(n : [12][8]) -> n # [0x00, 0x00, 0x00, 0x01] }};
+
+let j0_spec = do {
+  np <- llvm_alloc_readonly (llvm_array 12 (llvm_int 8));
+  outp <- llvm_alloc (llvm_array 16 (llvm_int 8));
+  n <- llvm_fresh_var "n" (llvm_array 12 (llvm_int 8));
+  llvm_points_to np (llvm_term n);
+  llvm_execute_func [np, outp];
+  llvm_points_to outp (llvm_term {{ j0_spec_fn n }});
+};
+llvm_verify m "saw_j0" [] true j0_spec z3;
+print "SAW: saw_j0 == J0 = IV || 0^31 || 1 (compiled code)";
+
+print "SAW: ALL PROOFS SUCCEEDED";
