@@ -2050,3 +2050,68 @@ mod tests {
         assert_eq!(err, Error::KeyStateStorageMisaligned);
     }
 }
+
+/// Kani bounded-model-checking harnesses for the intrinsic-free GCM logic.
+///
+/// Unlike the Z3 proofs in `proofs/`, which reason about a faithful *model* of
+/// the code, Kani (CBMC) verifies the **actual compiled Rust** symbolically over
+/// all inputs (bounded where noted) - so these are extraction-grade proofs of
+/// the counter increment, the length validation, and the nonce parser. Run with
+/// `cargo kani` (see docs/assurance.md). Compiled only under `cfg(kani)`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{
+        increment_counter, j0, nonce_from_slice, validate_gcm_lengths, Error, MAX_GCM_DATA_LEN,
+        MAX_GHASH_INPUT_LEN, NONCE_SIZE,
+    };
+
+    /// The compiled `increment_counter` is exactly SP 800-38D `inc_32`: the
+    /// trailing 32 bits increment big-endian (wrapping), the leading 96 bits are
+    /// untouched. Verified over all 2^128 counter blocks.
+    #[kani::proof]
+    fn increment_counter_is_be32_inc() {
+        let mut counter: [u8; 16] = kani::any();
+        let original = counter;
+        increment_counter(&mut counter);
+        assert!(counter[..12] == original[..12]);
+        let low = u32::from_be_bytes([original[12], original[13], original[14], original[15]]);
+        assert!(counter[12..] == low.wrapping_add(1).to_be_bytes());
+    }
+
+    /// `j0` builds `IV || 0^31 || 1` for any 96-bit nonce.
+    #[kani::proof]
+    fn j0_layout() {
+        let nonce: [u8; NONCE_SIZE] = kani::any();
+        let block = j0(&nonce);
+        assert!(block[..NONCE_SIZE] == nonce);
+        assert!(block[NONCE_SIZE..] == [0, 0, 0, 1]);
+    }
+
+    /// `validate_gcm_lengths` never panics and accepts exactly the lengths within
+    /// both the GCM counter limit and the GHASH 64-bit length field.
+    #[kani::proof]
+    fn validate_gcm_lengths_matches_limits() {
+        let aad_len: usize = kani::any();
+        let data_len: usize = kani::any();
+        let result = validate_gcm_lengths(aad_len, data_len);
+        let aad = aad_len as u64;
+        let data = data_len as u64;
+        let in_range =
+            data <= MAX_GCM_DATA_LEN && aad <= MAX_GHASH_INPUT_LEN && data <= MAX_GHASH_INPUT_LEN;
+        assert!(result.is_ok() == in_range);
+    }
+
+    /// `nonce_from_slice` never panics and returns Ok exactly when the slice is
+    /// the 12-byte nonce length. Bounded to lengths 0..=24.
+    #[kani::proof]
+    fn nonce_from_slice_accepts_only_correct_length() {
+        let len: usize = kani::any();
+        kani::assume(len <= 24);
+        let buf = [0_u8; 24];
+        let result = nonce_from_slice(&buf[..len]);
+        match result {
+            Ok(n) => assert!(len == NONCE_SIZE && n.len() == NONCE_SIZE),
+            Err(e) => assert!(len != NONCE_SIZE && matches!(e, Error::InvalidNonceLength)),
+        }
+    }
+}
