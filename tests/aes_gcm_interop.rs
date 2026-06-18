@@ -5,10 +5,17 @@
 
 use aes_gcm::aead::{Aead as _, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce as RustCryptoNonce};
-use hardware_rust_crypto::aes_gcm::{HardwareAes256Gcm, NONCE_SIZE, TAG_SIZE};
+use hardware_rust_crypto::aes_gcm::{Error, HardwareAes256Gcm, NONCE_SIZE, TAG_SIZE};
 use rand::{RngCore as _, SeedableRng as _};
 use rand_chacha::ChaCha20Rng;
 use ring::aead::{Aad, LessSafeKey, Nonce as RingNonce, UnboundKey, AES_256_GCM};
+
+fn rc_encrypt(key: &[u8; 32], nonce: &[u8; NONCE_SIZE], aad: &[u8], msg: &[u8]) -> Vec<u8> {
+    let cipher = Aes256Gcm::new_from_slice(key).unwrap();
+    cipher
+        .encrypt(RustCryptoNonce::from_slice(nonce), Payload { msg, aad })
+        .unwrap()
+}
 
 const KEY: [u8; 32] = [
     0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81,
@@ -220,6 +227,113 @@ fn dense_length_sweep_matches_rustcrypto() {
             );
         }
     }
+}
+
+#[test]
+fn every_single_byte_tamper_fails_across_sizes() {
+    let candidate = HardwareAes256Gcm::new(&KEY).unwrap();
+    for size in [0_usize, 1, 15, 16, 17, 31, 32, 64, 127, 128, 129] {
+        let plaintext = vec![0xa5_u8; size];
+        let ciphertext = candidate.encrypt(&NONCE, AAD, &plaintext).unwrap();
+
+        // Flip both an LSB and an MSB of every byte of ciphertext||tag.
+        for byte_index in 0..ciphertext.len() {
+            for bit in [0x01_u8, 0x80] {
+                let mut tampered = ciphertext.clone();
+                tampered[byte_index] ^= bit;
+                assert!(
+                    candidate.decrypt(&NONCE, AAD, &tampered).is_err(),
+                    "size {size}: tampered byte {byte_index} bit {bit:#x} authenticated"
+                );
+            }
+        }
+
+        let mut tampered_aad = AAD.to_vec();
+        tampered_aad[0] ^= 0x80;
+        assert!(candidate.decrypt(&NONCE, &tampered_aad, &ciphertext).is_err());
+        let mut tampered_nonce = NONCE;
+        tampered_nonce[0] ^= 0x80;
+        assert!(candidate.decrypt(&tampered_nonce, AAD, &ciphertext).is_err());
+    }
+}
+
+#[test]
+fn wrong_key_nonce_or_aad_is_rejected() {
+    let mut rng = ChaCha20Rng::seed_from_u64(0x4743_4d5f_5752_4f4e);
+    for _ in 0..256 {
+        let mut key = [0_u8; 32];
+        let mut nonce = [0_u8; NONCE_SIZE];
+        let mut plaintext = vec![0_u8; 1 + (rng.next_u32() as usize % 200)];
+        let mut aad = vec![0_u8; rng.next_u32() as usize % 64];
+        rng.fill_bytes(&mut key);
+        rng.fill_bytes(&mut nonce);
+        rng.fill_bytes(&mut plaintext);
+        rng.fill_bytes(&mut aad);
+
+        let cipher = HardwareAes256Gcm::new(&key).unwrap();
+        let ct = cipher.encrypt(&nonce, &aad, &plaintext).unwrap();
+
+        let mut wrong_key = key;
+        wrong_key[rng.next_u32() as usize % 32] ^= 1;
+        let wrong = HardwareAes256Gcm::new(&wrong_key).unwrap();
+        assert_eq!(wrong.decrypt(&nonce, &aad, &ct), Err(Error::Decrypt));
+
+        let mut wrong_nonce = nonce;
+        wrong_nonce[rng.next_u32() as usize % NONCE_SIZE] ^= 1;
+        assert_eq!(cipher.decrypt(&wrong_nonce, &aad, &ct), Err(Error::Decrypt));
+
+        let mut wrong_aad = aad.clone();
+        wrong_aad.push(0xff); // changing AAD length must also fail
+        assert_eq!(cipher.decrypt(&nonce, &wrong_aad, &ct), Err(Error::Decrypt));
+
+        assert_eq!(cipher.decrypt(&nonce, &aad, &ct).unwrap(), plaintext);
+    }
+}
+
+/// Dense AAD sweep across the GHASH 8/4/1-block aggregation boundaries, which
+/// the plaintext-only `dense_length_sweep_matches_rustcrypto` did not exercise.
+#[test]
+fn dense_aad_sweep_matches_rustcrypto() {
+    let mut rng = ChaCha20Rng::seed_from_u64(0x4743_4d5f_4141_4453);
+    for aad_len in 0..=288_usize {
+        for plaintext_len in [0_usize, 16, 37] {
+            let mut key = [0_u8; 32];
+            let mut nonce = [0_u8; NONCE_SIZE];
+            let mut plaintext = vec![0_u8; plaintext_len];
+            let mut aad = vec![0_u8; aad_len];
+            rng.fill_bytes(&mut key);
+            rng.fill_bytes(&mut nonce);
+            rng.fill_bytes(&mut plaintext);
+            rng.fill_bytes(&mut aad);
+
+            let candidate = HardwareAes256Gcm::new(&key).unwrap();
+            let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
+            assert_eq!(
+                candidate_ct,
+                rc_encrypt(&key, &nonce, &aad, &plaintext),
+                "ciphertext mismatch at aad_len={aad_len} plaintext_len={plaintext_len}"
+            );
+            assert_eq!(candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(), plaintext);
+        }
+    }
+}
+
+#[test]
+fn large_aad_and_plaintext() {
+    let mut rng = ChaCha20Rng::seed_from_u64(0x4743_4d5f_4c52_4745);
+    let mut key = [0_u8; 32];
+    let mut nonce = [0_u8; NONCE_SIZE];
+    let mut plaintext = vec![0_u8; 9000];
+    let mut aad = vec![0_u8; 5000];
+    rng.fill_bytes(&mut key);
+    rng.fill_bytes(&mut nonce);
+    rng.fill_bytes(&mut plaintext);
+    rng.fill_bytes(&mut aad);
+
+    let candidate = HardwareAes256Gcm::new(&key).unwrap();
+    let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
+    assert_eq!(candidate_ct, rc_encrypt(&key, &nonce, &aad, &plaintext));
+    assert_eq!(candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(), plaintext);
 }
 
 fn rustcrypto_encrypt() -> Vec<u8> {
