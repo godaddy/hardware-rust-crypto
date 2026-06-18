@@ -19,6 +19,12 @@ jobs:
     name: F* proof over hax-extracted composition
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # setup-ocaml@v3 creates a directory-local opam switch at the workspace root.
+    # Pin OPAMSWITCH to it so `opam install`/`opam env` resolve the same switch
+    # from any cwd - the hax engine builds from its checkout dir and check.sh runs
+    # from proofs/fstar/, neither of which carries the _opam local switch.
+    env:
+      OPAMSWITCH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
