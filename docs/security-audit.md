@@ -549,9 +549,15 @@ constant-time verification *method* is now documented in full, including why the
 Valgrind-secret-poisoning (ctgrind) technique is deliberately not used here:
 memcheck's shadow-value propagation through the AES-NI/PCLMULQDQ SIMD
 instructions is incomplete on exactly this code, producing false positives. The
-guarantee remains statistical (dudect / Welch t-test) over the Rust glue plus
-the accepted vendor data-independent-timing guarantee for the instructions
-themselves; this finding's residual status is unchanged.
+"not CI-gated" sub-gap is now closed: the `constant-time` CI job runs the dudect
+Welch t-test on both the GCM and SIV decrypt paths (tag-mismatch-position and
+content independence) on every build and **fails the build if `|t| ≥ 25`**.
+Best-of-three batches with first-pass early-exit absorb shared-runner jitter
+without flaking, since a real early-exit leak holds `|t|` in the hundreds across
+every batch (~267 measured) versus ~0.4-2.4 for the constant-time code. The
+guarantee remains statistical (not a machine-checked CT proof) and ARMv8.4
+`PSTATE.DIT` is still not set, so the finding stays **Low / residual** - but it
+is no longer un-gated.
 
 ---
 
@@ -659,9 +665,18 @@ finding to **Resolved**:
   and `reduce` (x86) reductions GF(2)-linear via Z3; `prove_ghash_identity.py`
   proves the per-block Horner recurrence equals the sum-of-powers form the batch
   path computes (sympy). Chained, the 8-/4-block aggregated path computes exactly
-  the specified accumulator for every input. `src/aes_gcm/ghash.rs`
-  (`aggregation_tests`) also checks the aggregated reduction equals per-block
-  evaluation at runtime. The `formal-proof` CI job runs the suite on every build.
+  the specified POLYVAL accumulator for every input. `prove_ghash_polyval_mapping.py`
+  then proves the byte-reversal + `mulX` bridge that drives **GHASH** on the
+  POLYVAL backend computes NIST SP 800-38D GHASH for every subkey and block count
+  (single-block mapping exhaustive on all 128×128 basis pairs, lifted to all block
+  counts via the Horner induction and `ByteReverse` being a linear involution) -
+  so the proof now reaches GHASH itself, not only the POLYVAL field core.
+  `src/aes_gcm/ghash.rs` (`aggregation_tests`) also checks the aggregated
+  reduction equals per-block evaluation at runtime, and
+  `mul_reference_anchor` re-derives the proof's anchor vectors from the real
+  backend on each CI architecture (so the x86 model is anchored to actual
+  AES-NI/PCLMULQDQ silicon, not only aarch64-captured output). The `formal-proof`
+  CI job runs the suite on every build.
 - *Property-based and fuzz testing of the decrypt parser.* `tests/proptest_aead.rs`
   adds round-trip, tamper-rejection, and decrypt-parser-never-panics properties
   for both modes (512 cases each); `fuzz/` adds differential and
@@ -1042,8 +1057,8 @@ audited; its current automated coverage is:
 | `proptest_aead` | 512×7 cases | round-trip + `*_to` consistency, single-byte tamper rejection, decrypt-parser-never-panics, construction-never-panics (both modes) |
 | `rng_statistical` | 3 | monobit / chi-square / serial-correlation sanity (PractRand/dieharder procedure in `docs/randomness-testing.md`) |
 | `fuzz/` | 4 targets | differential vs RustCrypto + decrypt-parser robustness (no panic / no UB), both modes |
-| `proofs/` | 3 proofs | machine-checked GHASH/POLYVAL field core for **all inputs** (basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity) |
-| `timing_constant_time` / `_siv` | 2 + 2 (ignored) | dudect harnesses for the GCM and SIV decrypt paths |
+| `proofs/` | 4 proofs | machine-checked GHASH/POLYVAL for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; and the ByteReverse+mulX+POLYVAL construction == NIST SP 800-38D GHASH |
+| `timing_constant_time` / `_siv` | 2 + 2 | dudect harnesses for the GCM and SIV decrypt paths, **CI-gated** (`constant-time` job, best-of-3, `\|t\| < 25`) |
 
 This resolves the Wycheproof and formal-proof gap (HRC-2026-08) for both modes
 and the parser property/fuzz gap. The Miri/sanitizer gap (HRC-2026-04) is
@@ -1063,7 +1078,7 @@ review and differential/known-answer testing; **not** accredited validation.
 | --- | --- | --- |
 | FIPS 197 | AES-256 cipher and key schedule | Conforms (reviewed; KAT) |
 | NIST SP 800-38A | CTR mode | Conforms (reviewed) |
-| NIST SP 800-38D | AES-GCM, GHASH, J0, length limits | Conforms (reviewed; NIST CAVP KAT + differential + Wycheproof; GHASH core machine-checked for all inputs) |
+| NIST SP 800-38D | AES-GCM, GHASH, J0, length limits | Conforms (reviewed; NIST CAVP KAT + differential + Wycheproof; GHASH construction machine-checked == SP 800-38D for all inputs) |
 | RFC 8452 | AES-256-GCM-SIV, POLYVAL, key derivation | Conforms (KAT + differential + Wycheproof; **added post-audit**, not independently reviewed) |
 | RFC 5116 / 5288 | AEAD interface; 96-bit GCM nonce | Conforms (reviewed) |
 | NIST SP 800-90A Rev. 1 | CTR_DRBG | Modeled on; **not** conformant/validated (section 7.4) |

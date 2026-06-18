@@ -17,7 +17,7 @@ and findings in [security-audit.md](security-audit.md).
 | **Fuzzing** | Differential + parser-robustness on the decrypt surface (no panic / no UB) | `fuzz/` |
 | **Memory-safety (interpreted)** | Miri over the entire **AES-256-GCM/SIV** key-state lifecycle and the real AES/GHASH paths on x86 (aliasing, provenance, OOB, uninit) | `cargo miri test --lib aes_gcm` (x86) |
 | **Memory-safety (native binary)** | Valgrind memcheck + ASan over the real AES-NI/PCLMULQDQ binary; TSan over the `Send/Sync` and cross-thread paths | CI jobs |
-| **Constant-time** | dudect Welch t-test on both decrypt paths (mismatch-position and content independence) | `tests/timing_constant_time*.rs` |
+| **Constant-time** | dudect Welch t-test on both decrypt paths (mismatch-position and content independence), best-of-3 and **CI-gated** (`|t| < 25`) | `tests/timing_constant_time*.rs`, `constant-time` CI job |
 | **RNG quality** | Monobit / chi-square / serial-correlation sanity (CI) + PractRand/dieharder procedure | `tests/rng_statistical.rs`, `docs/randomness-testing.md` |
 | **Supply chain** | No third-party cipher in the production graph (CI-enforced); `cargo audit` + `cargo deny` | CI, `deny.toml` |
 
@@ -64,22 +64,34 @@ So "the model" = "the shipped code" = "the spec" before any proof is trusted.
 | `prove_multiply.py` | The field multiply `mont_reduce(karatsuba2(karatsuba1(a,b)))` equals RFC 8452 POLYVAL `dot(a,b)`. | Both maps are GF(2)-bilinear, so they are determined by their values on a basis; equality is checked **exhaustively on all 128×128 standard-basis pairs** ⇒ equality everywhere. |
 | `prove_aggregation.py` | The exact `mont_reduce ∘ karatsuba2` (aarch64) and `reduce` (x86) are GF(2)-linear. | Z3 SMT, closed universally-quantified query. |
 | `prove_ghash_identity.py` | The per-block Horner recurrence equals the sum-of-powers form the batch path computes. | Symbolic expansion over a commutative ring (sympy). |
+| `prove_ghash_polyval_mapping.py` | The crate's `ByteReverse` + `mulX` + POLYVAL construction equals NIST SP 800-38D **GHASH**, for all hash subkeys and all block counts. | The single-block identity `gmul(X,H) = R(dot(R(X), mulX(R(H))))` is bilinear ⇒ exhaustive on all 128×128 basis pairs; the multi-block lift needs only that plus `ByteReverse` being a GF(2)-linear involution (Horner induction). |
 
 Chained: the multiply computes the correct POLYVAL product; linearity of the
 reduction means folding the per-slot Karatsuba partials and reducing **once**
 equals reducing each (so `update_blocks8`/`update_blocks4` compute
 `Σ_i x_i · H^{n-i+1}`); and that sum is exactly the GHASH/POLYVAL Horner
 accumulator of the specification. Therefore the batch path computes the
-specified accumulator for every input. This fully closes the formal portion of
-HRC-2026-08 for the field core.
+specified POLYVAL accumulator for every input. This fully closes the formal
+portion of HRC-2026-08 for the field core. `prove_ghash_polyval_mapping.py` then
+closes the POLYVAL→GHASH step: AES-GCM needs GHASH, but the backend computes
+POLYVAL, and the crate bridges the two with a byte-reversal + `mulX` trick
+(`GHashKey::init_in_place`, the per-block reversals, the reversed output). That
+bridge is the only novel hand-built algebra in the AEAD composition, and it is
+now proven to compute SP 800-38D GHASH for every subkey and block count.
 
 Reproduce: `pip install z3-solver sympy && ./proofs/run_all.sh` (exit 0). The
 `formal-proof` CI job runs it on every build. Scope: these proofs cover the
-GHASH/POLYVAL field arithmetic; AES correctness is covered by FIPS-197 / CAVP /
-RFC known-answer tests, and the `unsafe` memory handling by Miri and Valgrind
-(below). The aarch64 multiply is proven in full; the x86 path shares the
-bilinear basis argument and has its reduction proven linear directly, with the
-cross-architecture differential/KAT suites confirming byte-identical output.
+GHASH/POLYVAL field arithmetic and the GHASH construction; AES correctness is
+covered by FIPS-197 / CAVP / RFC known-answer tests, and the `unsafe` memory
+handling by Miri and Valgrind (below). **Both architectures' field multiplies
+are basis-proven in full** (`prove_multiply.py` runs the exhaustive 128×128 sweep
+for both the aarch64 `karatsuba`+`mont_reduce` and the x86 `clmul_wide`+`reduce`
+sequences), and both reductions are proven GF(2)-linear. The model is anchored to
+real silicon on **both** architectures: the reference vectors are reproduced
+byte-for-byte by the running backend `imp::mul` in the
+`imp_mul_matches_proof_reference_vectors` test, which the CI matrix runs on x86
+AES-NI/PCLMULQDQ as well as aarch64 - so the x86 model is no longer anchored only
+to aarch64-captured output.
 
 ### 2.2 Functional-correctness FV (roadmap, not yet done)
 
@@ -105,7 +117,15 @@ deliberately **not** used here: memcheck's shadow-value propagation through the
 AES-NI/PCLMULQDQ SIMD instructions is incomplete, which produces false
 positives and lost tracking on exactly this code. The hardware vendors guarantee
 data-independent timing for those instructions; the dudect harness empirically
-checks the surrounding Rust glue. See HRC-2026-05.
+checks the surrounding Rust glue. It is now **CI-gated**: the `constant-time` job
+runs both decrypt paths (GCM and SIV; tag-mismatch-position and content
+independence) and fails the build if Welch `|t|` stays at or above 25. To absorb
+shared-runner jitter without flaking, each test takes the best of three batches
+and exits on the first passing batch - a real early-exit leak holds `|t|` in the
+hundreds across every batch (measured ~267 for an early-vs-late tag comparison),
+three orders of magnitude above the ~0.4-2.4 constant-time code produces, so the
+gate separates the two cleanly. The remaining residual (no machine-checked CT
+proof; ARMv8.4 `PSTATE.DIT` not set) is unchanged. See HRC-2026-05.
 
 ## 3. Independent audit and CAVP/CMVP readiness
 
