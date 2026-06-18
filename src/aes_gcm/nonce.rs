@@ -58,7 +58,7 @@ impl NonceGen {
             self.resalt()?;
         }
 
-        let value = self.base.wrapping_add(u128::from(self.counter)) & NONCE_MASK_96;
+        let nonce = nonce_value(self.base, self.counter);
         self.counter = self.counter.wrapping_add(1);
         if self.counter == 0 {
             // Unreachable in practice (2^64 nonces); re-salt so the next base
@@ -66,9 +66,6 @@ impl NonceGen {
             self.resalt()?;
         }
 
-        let bytes = value.to_le_bytes();
-        let mut nonce = [0_u8; NONCE_SIZE];
-        nonce.copy_from_slice(&bytes[..NONCE_SIZE]);
         Ok(nonce)
     }
 
@@ -80,10 +77,46 @@ impl NonceGen {
     }
 }
 
+/// The unique-nonce arithmetic: `nonce = (base + counter) mod 2^96`, emitted
+/// little-endian. Factored out so the uniqueness property can be model-checked
+/// directly (see `kani_proofs::nonce_value_is_injective_in_counter`): for a
+/// fixed `base`, this is injective in `counter` across a full `2^64` sequence,
+/// which is exactly why the generated-nonce path cannot repeat a nonce within an
+/// instance.
+fn nonce_value(base: u128, counter: u64) -> [u8; NONCE_SIZE] {
+    let value = base.wrapping_add(u128::from(counter)) & NONCE_MASK_96;
+    let bytes = value.to_le_bytes();
+    let mut nonce = [0_u8; NONCE_SIZE];
+    nonce.copy_from_slice(&bytes[..NONCE_SIZE]);
+    nonce
+}
+
 /// Draws a 96-bit salt from the OS entropy source. The salt always comes from
 /// the OS, never the CPU RNG or a userspace generator.
 fn os_salt() -> Result<u128, Error> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes[..NONCE_SIZE]).map_err(|_| Error::OsEntropy)?;
     Ok(u128::from_le_bytes(bytes) & NONCE_MASK_96)
+}
+
+/// Kani proof: the generated-nonce sequence cannot repeat within an instance.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{nonce_value, NONCE_MASK_96};
+
+    /// For a fixed 96-bit base, `nonce_value` is **injective in the counter**:
+    /// two distinct counters (anywhere in the full `2^64` range) always produce
+    /// distinct nonces. This is the core guarantee of the generated-nonce path -
+    /// within one instance the per-call counter walk never reuses a nonce
+    /// (mitigating the GCM nonce-reuse footgun; see HRC-2026-01). Verified over
+    /// all bases and all counter pairs.
+    #[kani::proof]
+    fn nonce_value_is_injective_in_counter() {
+        let base: u128 = kani::any();
+        kani::assume(base <= NONCE_MASK_96);
+        let c1: u64 = kani::any();
+        let c2: u64 = kani::any();
+        kani::assume(c1 != c2);
+        assert!(nonce_value(base, c1) != nonce_value(base, c2));
+    }
 }
