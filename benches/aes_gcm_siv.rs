@@ -46,7 +46,8 @@ fn bench_encrypt(c: &mut Criterion) {
             let mut ctr = 0_u64;
             b.iter(|| {
                 ctr = ctr.wrapping_add(1);
-                key.encrypt(&nonce(ctr), AAD, black_box(&plaintext)).unwrap()
+                key.encrypt(&nonce(ctr), AAD, black_box(&plaintext))
+                    .unwrap()
             });
         });
 
@@ -67,7 +68,8 @@ fn bench_encrypt(c: &mut Criterion) {
             let mut ctr = 0_u64;
             b.iter(|| {
                 ctr = ctr.wrapping_add(1);
-                key.encrypt(&nonce(ctr), AAD, black_box(&plaintext)).unwrap()
+                key.encrypt(&nonce(ctr), AAD, black_box(&plaintext))
+                    .unwrap()
             });
         });
 
