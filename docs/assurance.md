@@ -141,10 +141,14 @@ spec:
 - **hax / Cryspen** - extract the safe Rust glue to F\*/Coq and prove the AEAD
   composition matches an RFC-derived spec. The arithmetic backends are intrinsic
   `unsafe`, outside hax's safe-subset, so they would remain trusted/axiomatized.
-  *Attempted:* the `cargo-hax` frontend installs and the F\* backend is present,
-  but extraction is blocked on hax's pinned-nightly rustc driver and the absence
-  of an F\* engine to check the output. The attempt, what it would add, and the
-  exact steps to finish it are recorded in [`proofs/hax/README.md`](../proofs/hax/README.md).
+  *Attempted, materially advanced:* the full hax toolchain now builds and runs on
+  this machine - the `driver-hax-frontend-exporter` and the Rust engine compile
+  against hax's pinned `nightly-2025-11-08`, and the F\* path needs no opam, so the
+  original toolchain blocker is solved. The live blocker is now that the crate's
+  fn-pointers (`pthread_atfork`) and pervasive intrinsics are outside hax's
+  importable subset, so the composition must be reformulated before it extracts.
+  The working bring-up commands, the exact incompatibilities, and the remaining
+  steps are recorded in [`proofs/hax/README.md`](../proofs/hax/README.md).
 - **SAW / Cryptol** - prove the compiled routine matches a Cryptol spec at the
   LLVM level, which can reach the intrinsic code the above cannot.
 
