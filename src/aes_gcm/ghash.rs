@@ -239,6 +239,120 @@ pub(crate) fn hardware_available() -> bool {
     imp::hardware_available()
 }
 
+/// POLYVAL (RFC 8452) over one AES-256-GCM-SIV message, built on the same
+/// carryless-multiply backend as GHASH.
+///
+/// POLYVAL is the field operation the backend computes natively: the GHASH
+/// path above adapts it with per-block byte reversal and a `mulX` on the hash
+/// key, and POLYVAL simply omits both. Blocks enter in their natural
+/// little-endian byte order, the message-authentication key is used directly
+/// (no `mulX`), and the length block is little-endian. The aggregated eight-,
+/// four-, and one-block reductions are shared verbatim, so POLYVAL runs at the
+/// same rate as the GHASH authentication pass.
+pub(crate) struct Polyval {
+    backend: imp::Backend,
+}
+
+impl Polyval {
+    /// Builds the eight Montgomery-form POLYVAL key powers
+    /// `[H^1, ..., H^8]` directly from the 16-byte message-authentication key.
+    ///
+    /// Unlike [`GHashKey::init_in_place`], the key is consumed as-is: no byte
+    /// reversal and no `mulX`, because POLYVAL is already the backend's native
+    /// domain. Returns `None` when the carryless-multiply hardware is absent.
+    pub(crate) fn key_powers(auth_key: &[u8; 16]) -> Option<[[u8; 16]; KEY_POWERS]> {
+        if !hardware_available() {
+            return None;
+        }
+
+        let h1 = *auth_key;
+        // SAFETY: hardware_available verified the carryless-multiply features
+        // required by imp::mul.
+        let h2 = unsafe { imp::mul(&h1, &h1) };
+        // SAFETY: as above.
+        let h3 = unsafe { imp::mul(&h2, &h1) };
+        // SAFETY: as above.
+        let h4 = unsafe { imp::mul(&h2, &h2) };
+        // SAFETY: as above.
+        let h5 = unsafe { imp::mul(&h4, &h1) };
+        // SAFETY: as above.
+        let h6 = unsafe { imp::mul(&h4, &h2) };
+        // SAFETY: as above.
+        let h7 = unsafe { imp::mul(&h4, &h3) };
+        // SAFETY: as above.
+        let h8 = unsafe { imp::mul(&h4, &h4) };
+        Some([h1, h2, h3, h4, h5, h6, h7, h8])
+    }
+
+    pub(crate) fn new(powers: &[[u8; 16]; KEY_POWERS]) -> Option<Self> {
+        Some(Self {
+            backend: imp::Backend::new(powers)?,
+        })
+    }
+
+    /// Absorbs a 16-byte-multiple run, eight blocks per reduction where
+    /// possible, then four, then one. POLYVAL consumes blocks in their natural
+    /// little-endian order, so unlike GHASH there is no per-block reversal.
+    pub(crate) fn absorb_blocks(&mut self, data: &[u8]) {
+        debug_assert!(
+            data.len().is_multiple_of(16),
+            "absorb_blocks needs whole blocks"
+        );
+
+        let mut octets = data.chunks_exact(128);
+        for octet in &mut octets {
+            let mut blocks = [[0_u8; 16]; 8];
+            for (block, chunk) in blocks.iter_mut().zip(octet.chunks_exact(16)) {
+                block.copy_from_slice(chunk);
+            }
+            self.backend.update_blocks8(&blocks);
+        }
+
+        let mut quads = octets.remainder().chunks_exact(64);
+        for quad in &mut quads {
+            let mut blocks = [[0_u8; 16]; 4];
+            for (block, chunk) in blocks.iter_mut().zip(quad.chunks_exact(16)) {
+                block.copy_from_slice(chunk);
+            }
+            self.backend.update_blocks4(&blocks);
+        }
+
+        for chunk in quads.remainder().chunks_exact(16) {
+            let mut block = [0_u8; 16];
+            block.copy_from_slice(chunk);
+            self.backend.update_block(&block);
+        }
+    }
+
+    /// Absorbs the remaining bytes of a section, zero-padding the final partial
+    /// block.
+    pub(crate) fn absorb_padded(&mut self, data: &[u8]) {
+        let full = data.len() - data.len() % 16;
+        self.absorb_blocks(&data[..full]);
+
+        let remainder = &data[full..];
+        if !remainder.is_empty() {
+            let mut block = [0_u8; 16];
+            block[..remainder.len()].copy_from_slice(remainder);
+            self.backend.update_block(&block);
+        }
+    }
+
+    /// Absorbs the little-endian length block `LE64(aad_bits) || LE64(data_bits)`
+    /// and returns the POLYVAL output directly (no GHASH output reversal).
+    ///
+    /// Returns `None` if a length does not fit the 64-bit length field.
+    pub(crate) fn finalize_with_lengths(self, aad_len: usize, data_len: usize) -> Option<[u8; 16]> {
+        let mut length_block = [0_u8; 16];
+        length_block[..8].copy_from_slice(&bit_len(aad_len)?.to_le_bytes());
+        length_block[8..].copy_from_slice(&bit_len(data_len)?.to_le_bytes());
+
+        let mut backend = self.backend;
+        backend.update_block(&length_block);
+        Some(backend.finalize())
+    }
+}
+
 #[allow(clippy::cast_ptr_alignment)] // Wide stores are alignment-checked at runtime.
 unsafe fn volatile_zero<T>(value: *mut T) {
     let len = core::mem::size_of::<T>();

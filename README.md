@@ -1,8 +1,8 @@
 # hardware-rust-crypto
 
-Hardware-only AES-256-GCM and key/nonce generation for Rust. Every AES round
-and every GF(2^128) multiply executes as a CPU instruction; no software
-fallback is compiled in.
+Hardware-only AES-256-GCM, AES-256-GCM-SIV, and key/nonce generation for Rust.
+Every AES round and every GF(2^128) multiply executes as a CPU instruction; no
+software fallback is compiled in.
 
 ## Why: the performance and footprint delta
 
@@ -44,6 +44,39 @@ a typed error instead of quietly degrading (a default RustCrypto build on
 aarch64 silently runs ~8x-slower software AES, see
 [docs/benchmarks.md](docs/benchmarks.md)).
 
+## AES-256-GCM-SIV: nonce-misuse-resistant, same hardware
+
+The crate also implements AES-256-GCM-SIV (RFC 8452) on the same hardware AES
+and carryless-multiply backends - POLYVAL is the field operation that backend
+computes natively, so it reuses the eight-block aggregated reduction, and the
+CTR pass drives eight interleaved AES chains. SIV is a two-pass design (it
+authenticates the plaintext before deriving the counter, so it cannot use the
+fused GCM loop) and derives a fresh per-message key, so it is slower than this
+crate's own AES-256-GCM - but it beats RustCrypto's AES-256-GCM-SIV at every
+size, **including RustCrypto's hardware-enabled configuration**, and is 12x-27x
+faster than the default build a consumer gets unmodified. There is no `ring`
+column here because `ring` implements no GCM-SIV mode (its only AEADs are
+AES-128/256-GCM and ChaCha20-Poly1305), so RustCrypto `aes-gcm-siv` is the only
+external reference; it is also our interop oracle, including the RFC 8452
+known-answer vectors.
+
+| Operation (lower is better, ns) | this crate (SIV) | this crate (GCM) | RustCrypto SIV (default) | RustCrypto SIV (armv8 cfgs) |
+| --- | --- | --- | --- | --- |
+| encrypt 1 KiB | 392 | 157 | 7350 | 891 |
+| encrypt 16 KiB | 3110 | 1970 | 84600 | 9960 |
+| decrypt 1 KiB | 395 | 169 | 7390 | 874 |
+| decrypt 16 KiB | 3040 | 1910 | 85100 | 10040 |
+
+Reusable AES-256-GCM-SIV key-state size: **this crate 240 B / RustCrypto 960 B**
+(unchanged across build configurations). At 240 bytes it is the leanest state in
+the crate - smaller than the 368-byte AES-256-GCM state - because the POLYVAL
+key powers are derived per message rather than precomputed into reusable state,
+so it holds only the key-generating AES schedule. Key setup is correspondingly
+cheap (23-41 ns versus 347 ns for RustCrypto). Same Apple M4 Max machine and
++/-10% sub-microsecond caveat as above; the full SIV matrix, both RustCrypto
+configurations, and the per-message-overhead breakdown are in
+[docs/benchmarks.md](docs/benchmarks.md).
+
 ## What it provides
 
 A single crate, `hardware-rust-crypto`, with two modules:
@@ -52,14 +85,23 @@ A single crate, `hardware-rust-crypto`, with two modules:
   allocation-free inline owned prepared keys (`HardwareAes256GcmKeyState`), and
   caller-controlled storage placement (`HardwareAes256GcmIn` /
   `UninitKeyStateSlot` / `key_state_layout`), so the caller decides where keys
-  and key-equivalent state live. Key state zeroizes on drop.
+  and key-equivalent state live. Key state zeroizes on drop. The same module
+  also provides nonce-misuse-resistant **AES-256-GCM-SIV** (RFC 8452) through a
+  parallel set of types (`HardwareAes256GcmSiv` /
+  `HardwareAes256GcmSivKeyState` / `HardwareAes256GcmSivIn` /
+  `SivUninitKeyStateSlot`), built on the same hardware AES and
+  carryless-multiply backends with POLYVAL authentication. Its 240-byte reusable
+  state is the leanest of the set (just the key-generating AES schedule) and 4x
+  smaller than RustCrypto's `Aes256GcmSiv`; see
+  [docs/benchmarks.md](docs/benchmarks.md).
 - `random`: a hardware-only AES-CTR key/nonce generator with fork detection
   and zeroized state. Initial seeding uses OS entropy (`getrandom`); reseeding
   blends CPU hardware-RNG entropy (RDSEED on x86_64, RNDRRS on aarch64
   Graviton) through the generator state when available, falling back to the OS
   otherwise (`cpu-rng-reseed` feature, default on).
 
-Interoperability tests against stock RustCrypto `aes-gcm` and `ring`, Criterion
+Interoperability tests against stock RustCrypto `aes-gcm`, `aes-gcm-siv`, and
+`ring` (including RFC 8452 known-answer vectors for the SIV path), Criterion
 benchmark harnesses, and CI on Linux x64 and macOS aarch64 round out the repo.
 
 The production dependency graph contains **no software cipher and no
@@ -85,6 +127,12 @@ The cryptographic cores are vendored, with minimal adaptation, from the
 - The AES-GCM composition (J0 construction, CTR keystream, length-block
   authentication, tag handling) follows NIST SP 800-38D and the RustCrypto
   [`aes-gcm`](https://github.com/RustCrypto/AEADs) crate's design.
+- The AES-256-GCM-SIV composition (per-nonce key derivation, POLYVAL over the
+  same carryless-multiply backend, SIV tag and little-endian CTR) follows
+  RFC 8452 and the RustCrypto
+  [`aes-gcm-siv`](https://github.com/RustCrypto/AEADs) crate's design. POLYVAL is
+  the field operation the vendored backend computes natively; the GHASH path is
+  the byte-reversed adaptation of it.
 
 Exact upstream versions, commit SHAs, copyright holders, licenses, and the
 modifications made are recorded in [NOTICE](NOTICE).
@@ -110,8 +158,9 @@ is used as a second cross-validation oracle.
 
 ## What was removed, and why
 
-This is a strict subset of the upstream functionality: AES-256-GCM with
-96-bit nonces, plus AES-256-CTR key generation. The deliberate deletions are:
+This is a strict subset of the upstream functionality: AES-256-GCM and
+AES-256-GCM-SIV with 96-bit nonces, plus AES-256-CTR key generation. The
+deliberate deletions are:
 
 - The fixsliced software AES fallback (and its state: 960 bytes of software
   round keys plus batch buffers, versus 240 bytes of hardware key schedule).
@@ -161,7 +210,12 @@ degrading.
    `encrypt_with_generated_nonce` / `encrypt_nonce_appended_generated` methods
    that generate a unique 96-bit nonce per call - a per-instance 64-bit counter
    over a 96-bit salt drawn **always from the OS** and re-salted on fork - and
-   return it alongside the ciphertext.
+   return it alongside the ciphertext. For workloads where nonce uniqueness
+   cannot be guaranteed at all, the `aes_gcm` module also offers AES-256-GCM-SIV
+   (RFC 8452), whose security degrades gracefully under accidental reuse:
+   identical (nonce, key, message) tuples produce identical ciphertext, but a
+   reused nonce never leaks the authentication key or earlier plaintexts the way
+   GCM does. The same generated-nonce helpers are available on the SIV types.
 
 ## Why hardware-only is the right default in production
 
@@ -194,6 +248,7 @@ cargo run --release --example state_size
 
 # Benchmarks (see docs/benchmarks.md for both RustCrypto configurations):
 cargo bench --bench aes_gcm
+cargo bench --bench aes_gcm_siv
 cargo bench --bench random
 
 # Constant-time verification (manual; see docs/constant-time.md):

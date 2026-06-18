@@ -25,6 +25,12 @@ mod aes;
 mod fork;
 mod ghash;
 mod nonce;
+mod siv;
+
+pub use siv::{
+    HardwareAes256GcmSiv, HardwareAes256GcmSivIn, HardwareAes256GcmSivKeyState,
+    SivUninitKeyStateSlot,
+};
 
 use core::{
     marker::PhantomData,
