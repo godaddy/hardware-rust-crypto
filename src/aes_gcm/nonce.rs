@@ -120,3 +120,32 @@ mod kani_proofs {
         assert!(nonce_value(base, c1) != nonce_value(base, c2));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::NonceGen;
+
+    /// Distinct generator instances must draw distinct OS salts, so their nonce
+    /// sequences differ from the first nonce - this is what stops nonce reuse
+    /// *across* instances (process restart, fork, multiple keys). It fails if the
+    /// salt is constant rather than entropy-derived. Collision probability for
+    /// two honest 96-bit salts is ~2^-96. Complements the Kani injectivity proof
+    /// (which covers *within*-instance uniqueness). Surfaced by mutation testing
+    /// (a constant `os_salt` previously survived); see docs/mutation-testing.md.
+    #[test]
+    fn distinct_instances_draw_distinct_salts() {
+        let mut a = NonceGen::new().expect("OS entropy available in tests");
+        let mut b = NonceGen::new().expect("OS entropy available in tests");
+        assert_ne!(
+            a.next().expect("nonce a"),
+            b.next().expect("nonce b"),
+            "two generator instances produced the same first nonce (constant salt?)"
+        );
+
+        // Within an instance the counter advances, so successive nonces differ.
+        let mut c = NonceGen::new().expect("OS entropy available in tests");
+        assert_ne!(c.next().unwrap(), c.next().unwrap());
+    }
+}

@@ -59,6 +59,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **Mutation testing** (`cargo-mutants`, `docs/mutation-testing.md`, in the
+  `heavy-assurance` workflow): validates that the test suite actually catches
+  injected bugs in the GCM composition and the nonce generator (319 mutants,
+  239 caught on the first run). It surfaced four real test gaps — the
+  `HardwareAes256GcmIn` explicit-buffer methods and `HardwareAes256GcmKeyState::
+  encrypt_to` were called but not output-verified, a constant `os_salt` (broken
+  cross-instance nonce uniqueness) survived, and `validate_gcm_lengths`'s `||`
+  chain was unpinned — each now closed by a new test. Residual survivors
+  (formatting, hardware detection, 2^36-byte limits, fork/wrap paths,
+  security-equivalent nonce masks) are individually documented.
 - **Binary-level constant-time verification** (`proofs/constant-time/verify.sh`,
   in the `constant-time` CI job): disassembles the two scalar secret-handling
   functions — the tag comparison (`constant_time_eq`) and the GHASH `mulX` carry
