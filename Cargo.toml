@@ -17,6 +17,9 @@ categories = ["cryptography"]
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
+# `kani` is set by the Kani model checker (cargo kani); register it so normal
+# builds do not warn on the cfg(kani) proof harnesses. See docs/assurance.md.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [lints.clippy]
 all = "warn"

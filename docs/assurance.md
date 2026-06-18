@@ -15,6 +15,7 @@ and findings in [security-audit.md](security-audit.md).
 | **Aggregation identity** | 8-/4-block aggregated reduction == per-block Horner evaluation | `src/aes_gcm/ghash.rs` (`aggregation_tests`) |
 | **Property-based** | Round-trip, `*_to` consistency, SIV determinism, tamper rejection, decrypt-parser robustness on arbitrary bytes | `tests/proptest_aead.rs` |
 | **Fuzzing** | Differential + parser-robustness on the decrypt surface (no panic / no UB) | `fuzz/` |
+| **Model checking (compiled Rust)** | Kani/CBMC verifies the **actual compiled** intrinsic-free logic over all inputs: GCM/SIV counter increments == the spec increments, J0 layout, length validation, the nonce parser, and the two envelope splitters (no panic, correct boundaries) | `cargo kani` (`cfg(kani)` harnesses) |
 | **Memory-safety (interpreted)** | Miri over the entire **AES-256-GCM/SIV** key-state lifecycle and the real AES/GHASH paths on x86 (aliasing, provenance, OOB, uninit) | `cargo miri test --lib aes_gcm` (x86) |
 | **Memory-safety (native binary)** | Valgrind memcheck + ASan over the real AES-NI/PCLMULQDQ binary; TSan over the `Send/Sync` and cross-thread paths | CI jobs |
 | **Constant-time** | dudect Welch t-test on both decrypt paths (mismatch-position and content independence), best-of-3 and **CI-gated** (`|t| < 25`) | `tests/timing_constant_time*.rs`, `constant-time` CI job |
@@ -117,9 +118,22 @@ all inputs:
 
 Each model mirrors the named function line for line and is anchored to the
 shipped bytes by the NIST CAVP / RFC 8452 C.2 end-to-end KATs and the
-`increment_counter` / `counter_wraps_*` unit tests. What remains open is an
-**extraction-based** proof that removes the hand-translation trust step - proving
-the *compiled Rust itself*, not a faithful model of it, matches the spec:
+`increment_counter` / `counter_wraps_*` unit tests.
+
+`prove_input_format.py` adds the GHASH/POLYVAL input framing - the zero-padding
+of partial AAD/ciphertext blocks and the 64+64-bit length block (`bit_len = 8 ·
+len`, big-endian, AAD then ciphertext) - matches SP 800-38D / RFC 8452, the
+bit-length conversion never overflows on accepted inputs, and the enforced length
+limits equal the standards' caps (the GCM `2^39 − 256`-bit plaintext cap and the
+RFC 8452 `2^36`-byte cap).
+
+For the intrinsic-free logic, the **extraction-based** step is already partly
+done: the `cfg(kani)` harnesses (§1, "Model checking") run Kani/CBMC over the
+*actual compiled* counter increments, length validators, J0 layout, nonce
+parser, and envelope splitters - verifying the shipped machine code, not a model.
+What remains open is extraction of the *AES-composition* glue (the parts that
+call the AES/authenticator oracles), proving the compiled Rust there matches the
+spec:
 
 - **hax / Cryspen** - extract the safe Rust glue to F\*/Coq and prove the AEAD
   composition matches an RFC-derived spec. The arithmetic backends are intrinsic
