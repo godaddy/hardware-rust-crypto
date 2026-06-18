@@ -20,7 +20,8 @@ permissions:
 jobs:
   saw:
     name: SAW LLVM-bitcode proof (composition)
-    runs-on: ubuntu-latest
+    # Pinned so the prebuilt SAW asset name (ubuntu-24.04-X64) is deterministic.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
@@ -29,17 +30,16 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # Pull the prebuilt SAW release WITH its bundled solvers (Z3/Yices/etc.)
-      # for the Linux x86_64 runner and put its bin/ on PATH.
+      # for this ubuntu-24.04 runner and put its bin/ on PATH. Direct release
+      # download (no GitHub API) so it does not hit the unauthenticated rate limit.
       - name: Install SAW ${{ inputs.saw_version }} (with solvers)
         run: |
           set -euo pipefail
           ver="${{ inputs.saw_version }}"
-          url=$(curl -fsSL "https://api.github.com/repos/GaloisInc/saw-script/releases/tags/v${ver}" \
-            | grep -oE 'https://[^"]+with-solvers[^"]+\.tar\.gz' \
-            | grep -iE 'linux|ubuntu' | head -1)
-          [ -n "$url" ] || { echo "could not find a Linux with-solvers asset for v${ver}" >&2; exit 1; }
+          asset="saw-${ver}-ubuntu-24.04-X64-with-solvers.tar.gz"
+          url="https://github.com/GaloisInc/saw-script/releases/download/v${ver}/${asset}"
           echo "asset: $url"
-          curl -fsSL -o saw.tar.gz "$url"
+          curl -fSL --retry 3 -o saw.tar.gz "$url"
           mkdir -p "$HOME/saw"
           tar xzf saw.tar.gz -C "$HOME/saw" --strip-components=1
           echo "$HOME/saw/bin" >> "$GITHUB_PATH"

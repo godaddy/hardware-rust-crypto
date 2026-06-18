@@ -21,7 +21,8 @@ permissions:
 jobs:
   crux-mir:
     name: crux-mir MIR proof (increment_counter)
-    runs-on: ubuntu-latest
+    # Pinned so the prebuilt SAW asset name (ubuntu-24.04-X64) is deterministic.
+    runs-on: ubuntu-24.04
     env:
       # mir-json is built for and must run under this exact nightly; forcing it
       # globally makes the temp crates that run.sh builds use it too.
@@ -44,11 +45,10 @@ jobs:
         run: |
           set -euo pipefail
           ver="${{ inputs.saw_version }}"
-          url=$(curl -fsSL "https://api.github.com/repos/GaloisInc/saw-script/releases/tags/v${ver}" \
-            | grep -oE 'https://[^"]+with-solvers[^"]+\.tar\.gz' \
-            | grep -iE 'linux|ubuntu' | head -1)
-          [ -n "$url" ] || { echo "could not find a Linux with-solvers asset for v${ver}" >&2; exit 1; }
-          curl -fsSL -o saw.tar.gz "$url"
+          asset="saw-${ver}-ubuntu-24.04-X64-with-solvers.tar.gz"
+          url="https://github.com/GaloisInc/saw-script/releases/download/v${ver}/${asset}"
+          echo "asset: $url"
+          curl -fSL --retry 3 -o saw.tar.gz "$url"
           mkdir -p "$HOME/saw"
           tar xzf saw.tar.gz -C "$HOME/saw" --strip-components=1
           ln -sf "$HOME/saw/bin/crux-mir-comp" "$HOME/saw/bin/crux-mir"
