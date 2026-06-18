@@ -26,12 +26,33 @@ feature (never shipped).
 
 SAW is the route to the one thing hax could not reach: the **AES-calling
 composition** (`seal`/`open`). At the LLVM level the AES-NI/PCLMULQDQ intrinsics
-appear as intrinsic calls that SAW can *axiomatize* (override with an
-uninterpreted Cryptol function), so the composition can be proven equal to an
+appear as intrinsic calls that SAW can in principle *axiomatize* (override with an
+uninterpreted Cryptol function), so the composition could be proven equal to an
 RFC-derived spec *given* a correct cipher - exactly the structure
-`prove_composition.py` checks with Z3, but over the compiled code. Extending the
-SAW proofs to `seal`/`open` (with the AES round and GHASH multiply axiomatized)
-is the tracked next step.
+`prove_composition.py` checks with Z3, but over the compiled code.
+
+### Reaching through the intrinsics: attempted, blocked by a SAW limitation
+
+`field_bilinearity.saw` is the next target: prove the GHASH/POLYVAL field multiply
+(`imp::mul`, the real PCLMULQDQ code) is **GF(2)-bilinear and commutative** - the
+property the basis-determination proof relies on - via the residual harnesses
+`saw_field_mul_{left,right}_linear` / `saw_field_mul_commutes` (built under
+`saw-verify`). Each harness computes a residual that is identically zero iff the
+property holds; SAW need only prove the output is always zero, *no Cryptol spec
+required*.
+
+It is **blocked by SAW 1.5, not by the maths or the setup**: SAW's crucible-llvm
+backend aborts with `Attempting to evaluate poison value` on the LLVM `poison`
+values rustc emits when lowering the 128-bit SIMD carryless-multiply intrinsics.
+This reproduces at every optimization level (`-O0` … `-O3`, with `-Zub-checks=no`
+to clear the debug-build precondition checks) and with `enable_experimental`. The
+intrinsic-free composition (`composition.saw`) is unaffected and verifies. The
+harnesses and `field_bilinearity.saw` are committed as the ready proof target for
+a SAW release that handles `poison`, or a `crux-mir` path with carryless-multiply
+models (`crux-mir-comp` ships in the SAW bundle but needs the `mir-json`
+toolchain, not bundled). Note that bilinearity is *already* proven for all inputs
+by `proofs/prove_multiply.py` (basis-exhaustive); SAW here would be independent
+corroboration over the compiled intrinsic, not the sole evidence.
 
 ## Reproduce
 
