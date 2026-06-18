@@ -147,16 +147,30 @@ bounded setup issues that the F\* effort must resolve first:
 
 Neither is conceptual; both are the usual "wire up the F\* project" chores.
 
-## Honest status
+## Status: a first checked F\* proof has landed
 
-**Extraction works** (`./extract.sh` emits the F\* modules); **F\* installs and
-runs**. What remains is the F\* proof project: resolve the two setup blockers
-above, axiomatize the opaque AES/GHASH backends as `assume val`s, and write +
-check the functional-correctness lemmas relating the extracted composition to the
-SP 800-38D / RFC 8452 spec — the same theorem `prove_composition.py` checks
-against a hand-written model, now over the hax-extracted source. That is a
-bounded but non-trivial F\* effort and is not done; no checked F\* proof is
-claimed.
+`proofs/fstar/HrcComposition.fst` is a **machine-checked F\* proof over the
+hax-extracted source**: it proves `j0` places the GCM pre-counter byte and
+`increment_counter` preserves the leading 96 bits (the SP 800-38D `inc_32`
+invariant), over the function bodies hax emits verbatim from `src/aes_gcm/`.
+`proofs/fstar/check.sh` re-extracts, drift-checks that the proved bodies match the
+fresh extraction byte-for-byte, and runs F\* (Z3 4.13.3). This is the T1.5
+"extracted-source proof" tier in `docs/proof-coverage.md`.
+
+What remains to extend it to the *whole* composition:
+
+- **The in-place `seal`/`open` helpers** — hax's functional model rejects
+  in-place mutation (`[HAX0008] reject_ArbitraryLhs`); they need a by-value
+  reformulation (or hax-side support) before they extract.
+- **The SIV derivation / tag / CTR functions** and **axiomatizing the opaque
+  AES/GHASH backends** as `assume val`s, then proving the full
+  composition equals the SP 800-38D / RFC 8452 spec (the theorem
+  `prove_composition.py` checks against a hand-written model, now over extracted
+  source). `Zeroize.fsti` stub + the bundle-cycle workaround (above) are needed
+  to typecheck the larger modules.
+
+So the pipeline is proven to work end-to-end on real functions; scaling it to the
+mutating composition is the remaining effort.
 
 The extraction output is **not committed** (it is large and regenerable; see
 `proofs/.gitignore`). Until the F\* proof lands, the AES-calling composition glue
