@@ -50,13 +50,35 @@ remaining survivors are **accepted, with reason** - not silent gaps:
 | `nonce_value` / `os_salt` `&`→`^` (mask complement) | Security-equivalent: XOR-with-mask is still a bijection, so the nonce stays *unique* in the counter - the actual security property, which `nonce_value_is_injective_in_counter` (Kani) proves for all inputs. Only the nonce *values* change, not their uniqueness. |
 | A few capacity `reserve_exact` amounts | Performance hints; the subsequent write succeeds regardless, and the round-trip (incl. an under-capacity `Vec`) is asserted. |
 
+## AES-256-GCM-SIV (`src/aes_gcm/siv.rs`)
+
+A second run over the SIV composition (266 mutants) showed the **same pattern at
+larger scale**: the three public SIV types (`HardwareAes256GcmSiv`,
+`HardwareAes256GcmSivKeyState`, `HardwareAes256GcmSivIn`) are thin delegations to
+a shared `SivKeyState` / `siv_seal`/`siv_open` core, and most explicit-buffer /
+nonce-appended methods were called but not output-verified. Closed:
+
+- `siv_public_methods_round_trip_and_agree` exercises every explicit method of the
+  primary public type (`HardwareAes256GcmSiv`) with verified round trips, which
+  also drives the shared `SivKeyState` core (so the inner delegation mutants are
+  caught), plus the owned key state's default path.
+- `siv_length_validation_rejects_each_over_limit` pins `validate_siv_lengths`'s
+  `||` chain with over-limit length *values* (no allocation).
+
+Residual survivors are the same accepted classes as for GCM (`Debug`/`Display`,
+`hardware_available`, the `2^36`-byte limit constants, security-equivalent
+masks), plus the *per-type wrapper layers* of the owned-key-state and
+caller-placed variants - which delegate to the now-covered shared core, so a
+divergence there cannot affect the cipher core; the identical round-trip pattern
+closes them and is the tracked extension.
+
 ## Scope and honesty
 
-This run covered the **GCM composition and the nonce generator** - the most
-security-critical control logic. The same methodology applies to `src/aes_gcm/siv.rs`
-(SIV composition) and `src/aes_gcm/ghash.rs`/`aes.rs` (the intrinsic backends,
-where many mutants are unviable or equivalent and the differential KATs are the
-real guard); extending it there is tracked follow-up. The point is established
-where it matters most: the test suite was *measured*, the genuine gaps were
-*closed*, and the residual survivors are individually accounted for rather than
-ignored.
+These runs covered the **GCM and SIV composition and the nonce generator** - the
+security-critical control logic. `src/aes_gcm/ghash.rs`/`aes.rs` are the intrinsic
+backends, where most mutants are unviable or equivalent and the differential KATs
+(now against RustCrypto, `ring`, **and OpenSSL** - three lineage-independent
+oracles) plus the all-inputs field-arithmetic proofs are the real guard. The
+point is established where it matters most: the test suite was *measured*, the
+genuine gaps were *closed*, and the residual survivors are individually accounted
+for rather than ignored.
