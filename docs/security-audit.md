@@ -1057,7 +1057,7 @@ audited; its current automated coverage is:
 | `proptest_aead` | 512×7 cases | round-trip + `*_to` consistency, single-byte tamper rejection, decrypt-parser-never-panics, construction-never-panics (both modes) |
 | `rng_statistical` | 3 | monobit / chi-square / serial-correlation sanity (PractRand/dieharder procedure in `docs/randomness-testing.md`) |
 | `fuzz/` | 4 targets | differential vs RustCrypto + decrypt-parser robustness (no panic / no UB), both modes |
-| `proofs/` | 4 proofs | machine-checked GHASH/POLYVAL for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; and the ByteReverse+mulX+POLYVAL construction == NIST SP 800-38D GHASH |
+| `proofs/` | 5 proofs | machine-checked for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; ByteReverse+mulX+POLYVAL == NIST SP 800-38D GHASH; and (Z3, AES/authenticator as oracles) the composition glue == SP 800-38D / RFC 8452 (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt) |
 | `timing_constant_time` / `_siv` | 2 + 2 | dudect harnesses for the GCM and SIV decrypt paths, **CI-gated** (`constant-time` job, best-of-3, `\|t\| < 25`) |
 
 This resolves the Wycheproof and formal-proof gap (HRC-2026-08) for both modes

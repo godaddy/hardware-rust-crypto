@@ -1556,13 +1556,47 @@ mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
 
     use super::{
-        Error, HardwareAes256Gcm, HardwareAes256GcmIn, HardwareAes256GcmKeyState,
-        UninitKeyStateSlot, NONCE_SIZE,
+        increment_counter, j0, Error, HardwareAes256Gcm, HardwareAes256GcmIn,
+        HardwareAes256GcmKeyState, UninitKeyStateSlot, NONCE_SIZE,
     };
     use core::mem::ManuallyDrop;
 
     #[repr(align(64))]
     struct AlignedStorage<const N: usize>([u8; N]);
+
+    /// Anchors the Z3 model in `proofs/prove_composition.py` to the real compiled
+    /// code: `increment_counter` is the SP 800-38D `inc_32` (big-endian counter in
+    /// the trailing four bytes, wrapping mod 2^32, leading 96 bits preserved).
+    #[test]
+    fn increment_counter_is_be32_inc_leaving_high_96_bits() {
+        // Wrap across the 32-bit boundary; the leading 12 bytes must not change.
+        let mut counter = [0_u8; 16];
+        counter[..12].copy_from_slice(&[0xAA; 12]);
+        counter[12..].copy_from_slice(&u32::MAX.to_be_bytes());
+        increment_counter(&mut counter);
+        assert_eq!(
+            &counter[..12],
+            &[0xAA; 12],
+            "leading 96 bits must be preserved"
+        );
+        assert_eq!(
+            &counter[12..],
+            &0_u32.to_be_bytes(),
+            "low 32 bits must wrap to 0"
+        );
+
+        // Plain carry into the next byte, big-endian.
+        let mut counter = [0_u8; 16];
+        counter[12..].copy_from_slice(&0x0000_00FF_u32.to_be_bytes());
+        increment_counter(&mut counter);
+        assert_eq!(&counter[12..], &0x0000_0100_u32.to_be_bytes());
+
+        // J0 for a 96-bit nonce is IV || 0^31 || 1 (SP 800-38D).
+        let nonce = [0x11_u8; NONCE_SIZE];
+        let block = j0(&nonce);
+        assert_eq!(&block[..NONCE_SIZE], &nonce);
+        assert_eq!(&block[NONCE_SIZE..], &[0, 0, 0, 1]);
+    }
 
     #[test]
     fn rejects_wrong_key_length() {

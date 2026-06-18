@@ -93,20 +93,43 @@ byte-for-byte by the running backend `imp::mul` in the
 AES-NI/PCLMULQDQ as well as aarch64 - so the x86 model is no longer anchored only
 to aarch64-captured output.
 
-### 2.2 Functional-correctness FV (roadmap, not yet done)
+### 2.2 Composition functional correctness
 
-A full proof that the Rust matches a reference specification is not in place. The
-realistic paths, in increasing cost:
+The AEAD composition - the byte plumbing that wires AES and the authenticator
+into AES-GCM and AES-GCM-SIV - is intrinsic-free, so it is reasoned about
+directly by an SMT solver in `prove_composition.py` (Z3), with AES and the
+authenticator as **uninterpreted functions** (their correctness comes from the
+field proofs above and the FIPS-197 / CAVP / RFC known-answer tests). Proven for
+all inputs:
+
+- the GCM counter increment `increment_counter` equals SP 800-38D `inc_32`
+  (big-endian, trailing 32 bits, leading 96 bits untouched), and the SIV counter
+  equals the RFC 8452 little-endian 32-bit increment (trailing 96 bits untouched);
+- the `J0 = IV ‖ 0^31 ‖ 1` construction, the SIV key-derivation input blocks
+  (`LE32(i) ‖ nonce`, low 8 bytes of each AES output, counters 0,1 then 2..5),
+  the SIV tag construction (nonce XOR, clear the `0x80` flag, AES), and the
+  SIV-CTR counter initialization (set the `0x80` flag);
+- **decryption inverts encryption and accepts genuine ciphertext** for both
+  modes, with `seal` and `open` modeled *independently* from their `mod.rs`/
+  `siv.rs` sources so a wiring divergence would fail the proof - confirmed by a
+  built-in non-vacuity check that a deliberately broken `open` (missing the
+  counter increment) is rejected.
+
+Each model mirrors the named function line for line and is anchored to the
+shipped bytes by the NIST CAVP / RFC 8452 C.2 end-to-end KATs and the
+`increment_counter` / `counter_wraps_*` unit tests. What remains open is an
+**extraction-based** proof that removes the hand-translation trust step - proving
+the *compiled Rust itself*, not a faithful model of it, matches the spec:
 
 - **hax / Cryspen** - extract the safe Rust glue to F\*/Coq and prove the AEAD
-  composition (J0/CTR/length-block/tag, SIV derivation/POLYVAL/SIV-CTR) matches
-  an RFC-derived spec. The arithmetic backends are intrinsic `unsafe`, outside
-  hax's safe-subset, so they would remain trusted/axiomatized.
+  composition matches an RFC-derived spec. The arithmetic backends are intrinsic
+  `unsafe`, outside hax's safe-subset, so they would remain trusted/axiomatized.
 - **SAW / Cryptol** - prove the compiled routine matches a Cryptol spec at the
   LLVM level, which can reach the intrinsic code the above cannot.
 
-These are tracked as future work; the crate does not currently claim
-machine-checked functional correctness.
+These extraction routes are tracked as future work; the crate does not yet claim
+extraction-based machine-checked functional correctness, only the SMT-checked
+composition correctness (modulo the hand-translated model) described above.
 
 ### 2.3 Constant-time verification method
 

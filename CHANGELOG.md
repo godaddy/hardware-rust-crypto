@@ -39,6 +39,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (symbolic), and the crate's ByteReverse + mulX + POLYVAL construction is proven
   equal to NIST SP 800-38D **GHASH** for every subkey and block count
   (`prove_ghash_polyval_mapping.py`).
+- **Composition proof** (`prove_composition.py`, Z3 with AES and the
+  authenticator as uninterpreted oracles): over all inputs, the intrinsic-free
+  AEAD glue matches SP 800-38D / RFC 8452 — the GCM `increment_counter` ==
+  `inc_32` and the SIV counter == the RFC little-endian 32-bit increment, the
+  J0 / SIV key-derivation / SIV tag layouts, and **decryption inverts encryption
+  and accepts genuine ciphertext** for both modes (`seal`/`open` modeled
+  independently; includes a non-vacuity check that a broken `open` is rejected).
 - **Cross-architecture proof anchor** (`mul_reference_anchor`): the real backend
   `imp::mul` is checked to reproduce the proof's reference vectors on each CI
   architecture, so the x86 proof model is anchored to actual AES-NI/PCLMULQDQ
