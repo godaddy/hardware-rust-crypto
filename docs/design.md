@@ -521,23 +521,33 @@ option for call sites that cannot guarantee unique nonces at all.
 
 ## Interoperability Testing
 
-Tests must prove:
+Tests prove, for both AES-256-GCM and AES-256-GCM-SIV:
 
-- Candidate AES-256-GCM ciphertext equals stock RustCrypto for fixed key, nonce,
-  AAD, and plaintext.
-- Candidate decrypts stock RustCrypto output.
-- Stock RustCrypto decrypts candidate output.
-- Candidate decrypts `ring` output.
-- `ring` decrypts candidate output.
+- Candidate ciphertext equals the stock reference for fixed key, nonce, AAD,
+  and plaintext (RustCrypto `aes-gcm` for GCM; RustCrypto `aes-gcm-siv` for SIV).
+- Candidate decrypts the reference output and the reference decrypts candidate
+  output (both directions; GCM additionally cross-decrypts with `ring`).
 - The nonce-appended layout remains `ciphertext || tag || nonce`.
-- Tampered ciphertext/tag/nonce fails authentication.
+- Tampered ciphertext/tag/nonce/AAD fails authentication.
 
-Future test expansion:
+Implemented test coverage (originally listed here as future expansion, now
+landed):
 
-- NIST AES-GCM known-answer vectors.
-- Wycheproof AES-GCM vectors if license and vendoring policy allow.
-- Randomized differential tests across many plaintext sizes, AAD sizes, keys,
-  nonces, and tamper positions.
+- **NIST SP 800-38D** AES-GCM known-answer vectors (GCM) and **RFC 8452
+  Appendix C.2** known-answer vectors (SIV).
+- **Project Wycheproof** vectors, vendored verbatim under Apache-2.0 (dev-only,
+  not in the production graph; see `NOTICE`): AES-256-GCM (66 cases) and
+  AES-256-GCM-SIV (103 cases, including the `WrappedIv` counter-wrap and
+  `ModifiedTag` rejection vectors) - this addresses security-audit finding
+  HRC-2026-08.
+- Randomized differential tests and dense length sweeps across many plaintext
+  sizes, AAD sizes (0..=288, across the GHASH/POLYVAL aggregation seams), keys,
+  nonces, and tamper positions; wrong key/nonce/AAD rejection over random trials.
+- White-box SIV tests for the per-message key derivation and the little-endian
+  CTR counter wrapping mod 2^32 (the wrap path is otherwise unreachable from the
+  public API).
+- dudect-style constant-time timing harnesses for both the GCM and SIV decrypt
+  paths (see docs/constant-time.md).
 - Cross-architecture CI on x86_64 and aarch64.
 
 ## Benchmarking
