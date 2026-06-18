@@ -1,0 +1,51 @@
+[package]
+name = "hardware-rust-crypto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone workspace so the fuzz crate (and its cipher dependencies, used only
+# as differential oracles) never enters the library's dependency graph.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+hardware-rust-crypto = { path = "..", features = ["hazmat-explicit-nonce"] }
+# Differential oracles (fuzz-crate-only).
+aes-gcm = { version = "0.10", features = ["aes"] }
+aes-gcm-siv = { version = "0.11", features = ["aes"] }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "gcm_decrypt"
+path = "fuzz_targets/gcm_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "siv_decrypt"
+path = "fuzz_targets/siv_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gcm_differential"
+path = "fuzz_targets/gcm_differential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "siv_differential"
+path = "fuzz_targets/siv_differential.rs"
+test = false
+doc = false
+bench = false
