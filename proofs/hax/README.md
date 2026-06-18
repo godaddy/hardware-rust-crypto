@@ -129,15 +129,34 @@ not translate; the by-value composition functions extract cleanly).
    `nonce_value`, `j0`, … first; the in-place `seal`/`open` helpers, which hax
    currently rejects, need either a by-value reformulation or hax-side support).
 
+## Toward a typecheck — concrete next blockers (found, not yet fixed)
+
+F\* itself installs and runs (`opam install fstar`; it accepts the system Z3).
+Pointing it at the extraction with the hax F\* support libraries on the include
+path (`hax-lib/proof-libs/fstar/{core,rust_primitives}`) surfaces two standard,
+bounded setup issues that the F\* effort must resolve first:
+
+1. **`Module not found: Zeroize`** — the composition calls the `zeroize` crate
+   (key wiping); hax emits references to a `Zeroize` module but not its body.
+   Provide an F\* interface stub (`Zeroize.fsti` with `val zeroize`), or mark the
+   `Zeroize` impls opaque on the Rust side.
+2. **`Recursive dependency on … Bundle.fst`** — hax's bundling makes the
+   per-module re-export files and `Bundle.fst` mutually depend. Typecheck the
+   self-contained `Bundle.fst` directly (don't feed the thin re-export modules),
+   or adjust hax's module-bundling options.
+
+Neither is conceptual; both are the usual "wire up the F\* project" chores.
+
 ## Honest status
 
-**Extraction works** (`./extract.sh` emits the F\* modules). What remains is the
-F\* proof itself: install F\* (`opam install fstar`), axiomatize the opaque
-AES/GHASH backends as `assume val`s, and write + check the functional-correctness
-lemmas relating the extracted composition to the SP 800-38D / RFC 8452 spec — the
-same theorem `prove_composition.py` checks against a hand-written model, now over
-the hax-extracted source. That is a bounded but non-trivial F\* effort and is not
-done; no checked F\* proof is claimed.
+**Extraction works** (`./extract.sh` emits the F\* modules); **F\* installs and
+runs**. What remains is the F\* proof project: resolve the two setup blockers
+above, axiomatize the opaque AES/GHASH backends as `assume val`s, and write +
+check the functional-correctness lemmas relating the extracted composition to the
+SP 800-38D / RFC 8452 spec — the same theorem `prove_composition.py` checks
+against a hand-written model, now over the hax-extracted source. That is a
+bounded but non-trivial F\* effort and is not done; no checked F\* proof is
+claimed.
 
 The extraction output is **not committed** (it is large and regenerable; see
 `proofs/.gitignore`). Until the F\* proof lands, the AES-calling composition glue
