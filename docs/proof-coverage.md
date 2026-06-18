@@ -51,7 +51,7 @@ instruction) are at T3.
 | Counters/J0/derivation/tag layouts + decrypt-inverts-encrypt + accepts genuine ciphertext == SP 800-38D / RFC 8452 | T2 | Z3 with AES & authenticator as uninterpreted oracles; `seal`/`open` modeled independently; non-vacuity check included | `proofs/prove_composition.py` |
 | `j0` sets the GCM pre-counter byte; `increment_counter` preserves the leading 96 bits (inc_32 invariant) — **proven over hax-extracted source** | T1.5 | **F\*** proof over the functions hax extracts from the real Rust (`extract.sh`), with a drift guard that the proved bodies match a fresh extraction | `proofs/fstar/HrcComposition.fst`, `check.sh` |
 | `increment_counter` == SP 800-38D inc_32, `j0` == `IV‖0³¹‖1` — **proven over the compiled LLVM bitcode** | T1 | **SAW** (Galois) verifies rustc's LLVM bitcode against a Cryptol spec — a third independent toolchain (own solvers) corroborating Z3 + Kani | `proofs/saw/composition.saw`, `run.sh` |
-| Composition output == RustCrypto `aes-gcm`/`aes-gcm-siv` and `ring`, both directions, dense length+AAD sweeps | T3 | Differential KATs | `tests/aes_gcm_interop.rs`, `aes_gcm_siv_interop.rs` |
+| Composition output == RustCrypto `aes-gcm`/`aes-gcm-siv`, `ring`, **and OpenSSL** (three lineage-independent oracles), both directions, dense sweeps | T3 | Differential KATs | `tests/aes_gcm_interop.rs`, `aes_gcm_siv_interop.rs`, `openssl_interop.rs` |
 | Composition == NIST CAVP (750) / RFC 8452 C.2 / Project Wycheproof (66 GCM + 103 SIV) | T3 | Vendored known-answer vectors | `tests/nist_cavp_gcm.rs`, `wycheproof_*` |
 
 ### AES-256 block cipher and key schedule

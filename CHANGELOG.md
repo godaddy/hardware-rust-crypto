@@ -60,6 +60,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
 - **Inductive composition proof** (`proofs/prove_composition_inductive.py`): lifts the GHASH Horner == sum-of-powers identity and the CTR decrypt-inverts-encrypt round-trip from representative block counts to **arbitrary n**, by symbolic induction (the Horner step is a ring identity; the CTR counter-sequence invariant + per-block bijection are checked with Z3).
+- **Third differential oracle (OpenSSL)** (`tests/openssl_interop.rs`): cross-validates AES-256-GCM byte-for-byte (200 cases, both directions, plus
+  tag-rejection) against OpenSSL's C implementation - a codebase independent of
+  both RustCrypto (pure Rust) and `ring` (BoringSSL heritage), so agreement
+  across all three rules out a shared specification-level bug. OpenSSL is a
+  vendored-build dev-dependency, never in the production dependency graph.
 - **SAW proofs over the compiled LLVM bitcode** (`proofs/saw/`): SAW (Galois)
   verifies rustc's LLVM bitcode for `increment_counter` and `j0` against a Cryptol
   spec (SP 800-38D `inc_32` and `J0 = IV‖0³¹‖1`) — a third independent
