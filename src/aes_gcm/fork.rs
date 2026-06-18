@@ -35,7 +35,7 @@ fn current_process_id() -> u32 {
     std::process::id()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(hax)))]
 fn generation() -> Option<u64> {
     use core::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
@@ -54,6 +54,14 @@ fn generation() -> Option<u64> {
         unsafe { libc::pthread_atfork(None, None, Some(bump_generation_in_child)) == 0 }
     });
     installed.then(|| FORK_GENERATION.load(Ordering::Acquire))
+}
+
+// Under hax/F* extraction only: the `pthread_atfork` function pointer is outside
+// hax's importable subset, and a runtime fork is not modeled by an extraction
+// proof regardless. Fall back to the process-id path so the importer proceeds.
+#[cfg(all(unix, hax))]
+fn generation() -> Option<u64> {
+    None
 }
 
 #[cfg(not(unix))]
