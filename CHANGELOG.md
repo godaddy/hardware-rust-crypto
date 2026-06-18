@@ -59,6 +59,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **Proof-coverage map** (`docs/proof-coverage.md`): one table of every verified
+  property with its method and an explicit trust level — compiled-code proof
+  (Kani/Miri), all-inputs model proof (Z3/sympy/exhaustive), exhaustive vectors,
+  or tooling — plus the named open items.
 - **Generated-nonce uniqueness proof** (`nonce_value_is_injective_in_counter`,
   cfg(kani)): Kani/CBMC proves the compiled `nonce = (base + counter) mod 2^96`
   arithmetic is injective in the counter over the full 2^64 sequence for every
