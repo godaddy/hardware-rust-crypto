@@ -171,7 +171,8 @@ fn ctr_apply(cipher: &aes::Aes256, counter: &mut [u8; AES_BLOCK_SIZE], data: &mu
             increment_siv_counter(counter);
         }
         cipher.encrypt8(&mut keystream);
-        for (key_block, data_block) in keystream.iter().zip(batch.chunks_exact_mut(AES_BLOCK_SIZE)) {
+        for (key_block, data_block) in keystream.iter().zip(batch.chunks_exact_mut(AES_BLOCK_SIZE))
+        {
             for (byte, key_byte) in data_block.iter_mut().zip(key_block.iter()) {
                 *byte ^= key_byte;
             }
@@ -699,7 +700,8 @@ impl HardwareAes256GcmSiv {
 
 impl std::fmt::Debug for HardwareAes256GcmSiv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HardwareAes256GcmSiv").finish_non_exhaustive()
+        f.debug_struct("HardwareAes256GcmSiv")
+            .finish_non_exhaustive()
     }
 }
 
@@ -1123,7 +1125,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use super::{
-        build_message_cipher, ctr_apply, derive_keys, increment_siv_counter, polyval_digest, aes,
+        aes, build_message_cipher, ctr_apply, derive_keys, increment_siv_counter, polyval_digest,
         AES_BLOCK_SIZE, NONCE_SIZE,
     };
 
@@ -1143,9 +1145,17 @@ mod tests {
 
         increment_siv_counter(&mut counter);
 
-        assert_eq!(&counter[..4], &0_u32.to_le_bytes(), "low 32 bits must wrap to 0");
+        assert_eq!(
+            &counter[..4],
+            &0_u32.to_le_bytes(),
+            "low 32 bits must wrap to 0"
+        );
         assert_eq!(counter[8], 0xAB, "high bytes must be preserved");
-        assert_eq!(counter[AES_BLOCK_SIZE - 1], 0x80, "0x80 marker must be preserved");
+        assert_eq!(
+            counter[AES_BLOCK_SIZE - 1],
+            0x80,
+            "0x80 marker must be preserved"
+        );
     }
 
     #[test]

@@ -63,7 +63,11 @@ fn wycheproof_aes_256_gcm_siv() {
             let mut ct_and_tag = ct.clone();
             ct_and_tag.extend_from_slice(&tag);
 
-            assert_eq!(iv.len(), NONCE_SIZE, "tcId {tc_id}: unexpected nonce length");
+            assert_eq!(
+                iv.len(),
+                NONCE_SIZE,
+                "tcId {tc_id}: unexpected nonce length"
+            );
             let cipher = HardwareAes256GcmSiv::new(&key).unwrap();
 
             total += 1;
@@ -83,7 +87,10 @@ fn wycheproof_aes_256_gcm_siv() {
                     );
                     // Decryption must recover the plaintext.
                     let recovered = cipher.decrypt(&iv, &aad, &ct_and_tag).unwrap();
-                    assert_eq!(recovered, msg, "tcId {tc_id} ({flags:?}): decryption mismatch");
+                    assert_eq!(
+                        recovered, msg,
+                        "tcId {tc_id} ({flags:?}): decryption mismatch"
+                    );
                 }
                 "invalid" => {
                     invalid += 1;
@@ -103,6 +110,9 @@ fn wycheproof_aes_256_gcm_siv() {
     assert_eq!(total, 103, "expected 103 AES-256-GCM-SIV vectors");
     assert_eq!(valid, 69);
     assert_eq!(invalid, 34);
-    assert_eq!(wrapped, 5, "the counter-wrap (WrappedIv) vectors must be present");
+    assert_eq!(
+        wrapped, 5,
+        "the counter-wrap (WrappedIv) vectors must be present"
+    );
     println!("Wycheproof AES-256-GCM-SIV: {total} vectors ({valid} valid, {invalid} invalid, {wrapped} counter-wrap) all passed");
 }
