@@ -494,12 +494,12 @@ Accepted zeroization residual risk:
 AES-GCM fails catastrophically on `(key, nonce)` reuse (it leaks plaintext XOR
 and allows recovery of the GHASH subkey, enabling universal forgery), and SP
 800-38D section 8.3 bounds a key to ~2^32 invocations under randomly generated 96-bit
-nonces. The primary API takes a caller-supplied nonce and does not enforce
-uniqueness - standard for a low-level primitive, but a footgun.
+nonces. The default API does not accept a caller-supplied nonce: `encrypt` and
+`encrypt_to` generate one internally and return the self-framed
+`ciphertext || tag || nonce` envelope; `decrypt` and `decrypt_to` parse the
+nonce only from that envelope.
 
-For callers that prefer the library to manage uniqueness, the
-`encrypt_with_generated_nonce` / `encrypt_nonce_appended_generated` APIs
-generate the nonce internally and return it. The construction:
+The construction:
 
 - `nonce = (salt + counter) mod 2^96`.
 - `salt` is a 96-bit value **always drawn from the OS entropy source**
@@ -517,17 +517,27 @@ re-drawn on fork via the same `pthread_atfork` generation counter used by
 generator state lives on the handle, not in the placed key state, so the
 368-byte key-state footprint is unchanged. This is plain AES-GCM (no
 AES-GCM-SIV): it *prevents* reuse rather than *surviving* it; SIV remains the
-option for call sites that cannot guarantee unique nonces at all.
+option for call sites that cannot trust local nonce state at all. Low-level
+caller-supplied-nonce entry points are isolated behind the non-default
+`hazmat-explicit-nonce` feature and are intended for test vectors,
+interoperability work, and benchmark investigations.
 
 ## Interoperability Testing
 
 Tests prove, for both AES-256-GCM and AES-256-GCM-SIV:
 
-- Candidate ciphertext equals the stock reference for fixed key, nonce, AAD,
-  and plaintext (RustCrypto `aes-gcm` for GCM; RustCrypto `aes-gcm-siv` for SIV).
-- Candidate decrypts the reference output and the reference decrypts candidate
-  output (both directions; GCM additionally cross-decrypts with `ring`).
-- The nonce-appended layout remains `ciphertext || tag || nonce`.
+- Candidate ciphertext equals the stock reference for the generated nonce
+  embedded in the envelope (RustCrypto `aes-gcm` for GCM; RustCrypto
+  `aes-gcm-siv` for SIV).
+- Candidate decrypts stock reference output when framed as
+  `ciphertext || tag || nonce`.
+- Stock references decrypt candidate output after parsing the envelope nonce
+  (GCM additionally cross-decrypts with `ring`).
+- `ring` decrypts GCM candidate output after parsing the envelope nonce, and
+  candidate GCM decrypts `ring` output when framed as `ciphertext || tag ||
+  nonce`.
+- The default envelope layout remains `ciphertext || tag || nonce` for both
+  modes.
 - Tampered ciphertext/tag/nonce/AAD fails authentication.
 
 Implemented test coverage (originally listed here as future expansion, now

@@ -109,7 +109,9 @@ crates runtime-detect AES-NI/PCLMULQDQ there by default.
   built with `RUSTFLAGS="--cfg aes_armv8 --cfg polyval_armv8"`. Candidate and
   ring numbers are identical in both configurations.
 - `candidate` rows allocate their output inside the timed loop, like the
-  RustCrypto rows; `candidate-noalloc` rows use the `encrypt_to`/`decrypt_to`
+  RustCrypto rows. Current candidate encrypt rows use the default
+  nonce-generating envelope API (`ciphertext || tag || nonce`);
+  `candidate-noalloc` rows use the default `encrypt_to`/`decrypt_to`
   caller-buffer APIs. ring's in-place API gets its buffer from untimed
   Criterion setup, so `candidate-noalloc` is the apples-to-apples comparison
   with ring.
@@ -131,10 +133,13 @@ crates runtime-detect AES-NI/PCLMULQDQ there by default.
 
 ## AES-256-GCM encrypt, nonce-appended layout
 
-These rows measure the self-framed `ciphertext || tag || nonce` layout used by
-callers that store the nonce with the ciphertext. The ring row seals in place
-and appends the nonce after the AEAD operation; `candidate-in-place` starts
-from a plaintext `Vec` with capacity for the tag and nonce.
+These rows measure the self-framed `ciphertext || tag || nonce` layout with a
+caller-supplied nonce. In current code these low-level benchmark paths are
+compiled only with `--features hazmat-explicit-nonce`; the normal public API
+uses the same byte layout but generates the nonce internally. The ring row
+seals in place and appends the nonce after the AEAD operation;
+`candidate-in-place` starts from a plaintext `Vec` with capacity for the tag
+and nonce.
 
 | Size | candidate | candidate-noalloc | candidate-in-place | ring |
 | --- | --- | --- | --- | --- |
