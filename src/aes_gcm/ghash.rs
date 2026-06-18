@@ -1991,3 +1991,126 @@ mod imp {
         false
     }
 }
+
+#[cfg(all(
+    test,
+    any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod aggregation_tests {
+    //! Direct correctness check of the multi-block aggregated reduction.
+    //!
+    //! The 8- and 4-block aggregations fold several carryless products and
+    //! reduce once, which is valid only because the Montgomery reduction is
+    //! linear over the XOR of the wide products. These tests prove that
+    //! identity against the per-block path it replaces: for the same key
+    //! powers and the same blocks, `update_blocks8`/`update_blocks4` must equal
+    //! a sequence of single-block `update_block` calls (the textbook Horner
+    //! GHASH/POLYVAL evaluation). The `Backend` is domain-agnostic, so this
+    //! covers both the GHASH and the GCM-SIV POLYVAL use of the same code.
+    #![allow(clippy::unwrap_used)]
+
+    use super::{imp::Backend, Polyval, KEY_POWERS};
+
+    /// Deterministic, dependency-free pseudo-random 16-byte block stream.
+    struct Xs(u64);
+    impl Xs {
+        fn block(&mut self) -> [u8; 16] {
+            let mut out = [0_u8; 16];
+            for chunk in out.chunks_mut(8) {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                chunk.copy_from_slice(&self.0.to_le_bytes());
+            }
+            out
+        }
+    }
+
+    fn powers(seed: u64) -> [[u8; 16]; KEY_POWERS] {
+        let mut xs = Xs(seed);
+        // Any nonzero hash key yields a valid power ladder H^1..H^8.
+        Polyval::key_powers(&xs.block()).unwrap()
+    }
+
+    fn naive(powers: &[[u8; 16]; KEY_POWERS], blocks: &[[u8; 16]]) -> [u8; 16] {
+        let mut backend = Backend::new(powers).unwrap();
+        for block in blocks {
+            backend.update_block(block);
+        }
+        backend.finalize()
+    }
+
+    #[test]
+    fn eight_block_aggregation_equals_per_block() {
+        for seed in [1_u64, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_d00d] {
+            let powers = powers(seed);
+            let mut xs = Xs(seed ^ 0xa5a5_a5a5);
+            for _round in 0..64 {
+                let mut blocks = [[0_u8; 16]; KEY_POWERS];
+                for b in &mut blocks {
+                    *b = xs.block();
+                }
+                let mut agg = Backend::new(&powers).unwrap();
+                agg.update_blocks8(&blocks);
+                assert_eq!(
+                    agg.finalize(),
+                    naive(&powers, &blocks),
+                    "8-block aggregation diverged from the per-block reduction"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn four_block_aggregation_equals_per_block() {
+        for seed in [2_u64, 0x1234_5678_9abc_def0] {
+            let powers = powers(seed);
+            let mut xs = Xs(seed ^ 0x5a5a_5a5a);
+            for _round in 0..64 {
+                let mut blocks = [[0_u8; 16]; 4];
+                for b in &mut blocks {
+                    *b = xs.block();
+                }
+                let mut agg = Backend::new(&powers).unwrap();
+                agg.update_blocks4(&blocks);
+                assert_eq!(
+                    agg.finalize(),
+                    naive(&powers, &blocks),
+                    "4-block aggregation diverged from the per-block reduction"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_batch_and_tail_equals_per_block() {
+        // A full 8-block batch, then a 4-block group, then singles - the exact
+        // shape `absorb_blocks` produces - must still equal the flat per-block
+        // evaluation over the concatenation.
+        let powers = powers(7);
+        let mut xs = Xs(0xfeed_face);
+        let mut all = Vec::new();
+        for _ in 0..8 {
+            all.push(xs.block());
+        }
+        for _ in 0..4 {
+            all.push(xs.block());
+        }
+        for _ in 0..3 {
+            all.push(xs.block());
+        }
+
+        let mut agg = Backend::new(&powers).unwrap();
+        let mut eight = [[0_u8; 16]; KEY_POWERS];
+        eight.copy_from_slice(&all[..8]);
+        agg.update_blocks8(&eight);
+        let mut four = [[0_u8; 16]; 4];
+        four.copy_from_slice(&all[8..12]);
+        agg.update_blocks4(&four);
+        for block in &all[12..] {
+            agg.update_block(block);
+        }
+
+        assert_eq!(agg.finalize(), naive(&powers, &all));
+    }
+}

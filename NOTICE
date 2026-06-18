@@ -73,3 +73,14 @@ Vendored test data (not compiled into the library):
      AES-256-GCM-SIV paths, including the SIV counter-wrap and the
      tag-rejection vectors. Not part of the published library or its
      dependency graph.
+
+5. NIST CAVP AES-GCM test vectors
+   - Source: NIST Cryptographic Algorithm Validation Program, GCM test
+     vectors (gcmEncryptExtIV256.rsp and gcmDecrypt256.rsp).
+   - Copyright: U.S. Government work, not subject to copyright (public domain).
+   - Vendored as test data: the Keylen=256 / IVlen=96 / Taglen=128 subset,
+     converted verbatim to JSON (downloaded, not transcribed):
+     tests/data/nist_cavp_aes256_gcm.json
+   - Used only by the test suite (tests/nist_cavp_gcm.rs). Functional
+     known-answer coverage; not CAVP accreditation. Not part of the published
+     library or its dependency graph.

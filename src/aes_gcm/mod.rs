@@ -1891,13 +1891,15 @@ mod tests {
         let layout = HardwareAes256Gcm::key_state_layout();
         let mut key =
             ManuallyDrop::new(HardwareAes256GcmKeyState::new(&[7_u8; 32]).expect("valid test key"));
-        let storage = key.storage.bytes_ptr_mut();
 
-        // SAFETY: key lives in this stack frame. ManuallyDrop lets us run its
-        // Drop impl while retaining access to the backing bytes to verify the
-        // wipe before the stack slot is reused.
+        // SAFETY: key lives in this stack frame and ManuallyDrop keeps the
+        // backing bytes valid after its Drop impl runs (the value is logically
+        // dropped but not freed). The storage pointer is taken *after* the drop
+        // so its provenance is not invalidated by the `&mut key` the drop uses -
+        // reading the just-wiped bytes through a freshly-derived pointer.
         unsafe {
             ManuallyDrop::drop(&mut key);
+            let storage = key.storage.bytes_ptr_mut();
             let bytes = std::slice::from_raw_parts(storage.cast_const(), layout.size);
             assert!(bytes.iter().all(|byte| *byte == 0));
         }

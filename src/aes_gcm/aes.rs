@@ -96,6 +96,80 @@ unsafe fn volatile_zero<T>(value: *mut T) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Software AES-256 key schedule - TEST/MIRI ONLY.
+//
+// This is gated `#[cfg(any(test, miri))]` and is NEVER compiled into a normal
+// build (debug or release), so it does not affect the shipped library's
+// "hardware-only, no S-box in memory" guarantee in any way. It exists for two
+// reasons:
+//   * the host test below validates it against the real hardware key schedule;
+//   * under Miri (`cargo miri test`), which does not implement the
+//     `aeskeygenassist` / NEON `aese` key-expansion intrinsics, the x86 backend
+//     routes key expansion through it so that Miri can execute the entire
+//     key-state lifecycle and the real AES rounds (`_mm_aesenc_si128`, which
+//     Miri *does* implement) under its undefined-behavior checker.
+// It produces byte-identical round keys to the hardware path (asserted by
+// `software_schedule_matches_hardware`).
+#[cfg(any(test, miri))]
+pub(crate) const AES_SBOX: [u8; 256] = [
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+];
+
+/// Standard FIPS-197 AES-256 key expansion in portable software. Returns the 15
+/// round keys in the byte order the hardware backends store them (validated by
+/// `software_schedule_matches_hardware`). TEST/MIRI only.
+#[cfg(any(test, miri))]
+pub(crate) fn software_key_schedule(key: &[u8; 32]) -> [[u8; 16]; 15] {
+    const RCON: [u8; 7] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40];
+    let sub = |w: [u8; 4]| {
+        [
+            AES_SBOX[w[0] as usize],
+            AES_SBOX[w[1] as usize],
+            AES_SBOX[w[2] as usize],
+            AES_SBOX[w[3] as usize],
+        ]
+    };
+    let mut w = [[0_u8; 4]; 60];
+    for i in 0..8 {
+        w[i] = [key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]];
+    }
+    for i in 8..60 {
+        let mut t = w[i - 1];
+        if i % 8 == 0 {
+            t = sub([t[1], t[2], t[3], t[0]]); // RotWord then SubWord
+            t[0] ^= RCON[i / 8 - 1];
+        } else if i % 8 == 4 {
+            t = sub(t);
+        }
+        for j in 0..4 {
+            w[i][j] = w[i - 8][j] ^ t[j];
+        }
+    }
+    let mut rk = [[0_u8; 16]; 15];
+    for r in 0..15 {
+        for c in 0..4 {
+            rk[r][4 * c..4 * c + 4].copy_from_slice(&w[4 * r + c]);
+        }
+    }
+    rk
+}
+
 #[cfg(target_arch = "aarch64")]
 mod imp {
     use super::volatile_zero;
@@ -295,14 +369,20 @@ mod imp {
 
     #[cfg(target_arch = "x86")]
     use core::arch::x86::{
-        __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_aeskeygenassist_si128,
-        _mm_loadu_si128, _mm_shuffle_epi32, _mm_slli_si128, _mm_storeu_si128, _mm_xor_si128,
+        __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_loadu_si128, _mm_storeu_si128,
+        _mm_xor_si128,
     };
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
-        __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_aeskeygenassist_si128,
-        _mm_loadu_si128, _mm_shuffle_epi32, _mm_slli_si128, _mm_storeu_si128, _mm_xor_si128,
+        __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_loadu_si128, _mm_storeu_si128,
+        _mm_xor_si128,
     };
+    // Key-expansion-only intrinsics. Under Miri the key schedule is computed in
+    // software (Miri lacks aeskeygenassist), so these are not used there.
+    #[cfg(all(not(miri), target_arch = "x86"))]
+    use core::arch::x86::{_mm_aeskeygenassist_si128, _mm_shuffle_epi32, _mm_slli_si128};
+    #[cfg(all(not(miri), target_arch = "x86_64"))]
+    use core::arch::x86_64::{_mm_aeskeygenassist_si128, _mm_shuffle_epi32, _mm_slli_si128};
 
     const AES256_ROUND_KEY_COUNT: usize = 15;
 
@@ -412,6 +492,28 @@ mod imp {
         std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("sse2")
     }
 
+    // Under Miri only, expand the key with the portable software schedule
+    // (Miri lacks `_mm_aeskeygenassist_si128`). Byte-identical to the hardware
+    // path; the AES rounds still use the real `_mm_aesenc_si128`. Never compiled
+    // outside `cargo miri`.
+    #[cfg(miri)]
+    #[target_feature(enable = "sse2", enable = "aes")]
+    unsafe fn aes256_key_expansion(
+        expanded_keys: *mut [__m128i; AES256_ROUND_KEY_COUNT],
+        key: &[u8; 32],
+    ) {
+        let schedule = super::software_key_schedule(key);
+        for (i, rk) in schedule.iter().enumerate() {
+            // SAFETY: i in 0..15 is within the round-key array; rk is a valid
+            // 16-byte buffer; expanded_keys is writable per the caller.
+            unsafe {
+                core::ptr::addr_of_mut!((*expanded_keys)[i])
+                    .write(_mm_loadu_si128(rk.as_ptr().cast()));
+            }
+        }
+    }
+
+    #[cfg(not(miri))]
     #[target_feature(enable = "sse2", enable = "aes")]
     unsafe fn aes256_key_expansion(
         expanded_keys: *mut [__m128i; AES256_ROUND_KEY_COUNT],
@@ -497,5 +599,75 @@ mod imp {
 
     pub(super) const fn hardware_available() -> bool {
         false
+    }
+}
+
+#[cfg(all(
+    test,
+    any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+))]
+mod tests {
+    #![allow(clippy::cast_possible_truncation, clippy::expect_used)]
+
+    use super::{software_key_schedule, Aes256};
+    use core::mem::MaybeUninit;
+
+    /// Reads the real hardware-expanded round keys back as bytes.
+    fn hardware_round_keys(key: &[u8; 32]) -> [[u8; 16]; 15] {
+        let mut slot = MaybeUninit::<Aes256>::uninit();
+        Aes256::init_in_place(slot.as_mut_ptr(), key).expect("hardware AES available");
+        // SAFETY: init_in_place initialized the storage on success.
+        let aes = unsafe { slot.assume_init() };
+        let mut out = [[0_u8; 16]; 15];
+        for (dst, rk) in out.iter_mut().zip(aes.round_keys().iter()) {
+            #[cfg(target_arch = "aarch64")]
+            // SAFETY: dst is a writable 16-byte buffer; neon is baseline.
+            unsafe {
+                core::arch::aarch64::vst1q_u8(dst.as_mut_ptr(), *rk);
+            }
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            // SAFETY: dst is a writable 16-byte buffer; sse2 is baseline on x86_64.
+            unsafe {
+                #[cfg(target_arch = "x86")]
+                use core::arch::x86::_mm_storeu_si128;
+                #[cfg(target_arch = "x86_64")]
+                use core::arch::x86_64::_mm_storeu_si128;
+                _mm_storeu_si128(dst.as_mut_ptr().cast(), *rk);
+            }
+        }
+        out
+    }
+
+    /// The TEST/MIRI software key schedule must produce byte-identical round keys
+    /// to the shipped hardware key expansion - the invariant that makes the
+    /// `cfg(miri)` key-expansion path sound (it lets Miri run the real lifecycle
+    /// and AES rounds while computing the same keys).
+    #[test]
+    fn software_schedule_matches_hardware() {
+        // FIPS-197 AES-256 sample key plus pseudo-random keys.
+        let mut keys = vec![[0_u8; 32]];
+        let mut fips = [0_u8; 32];
+        for (i, b) in fips.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        keys.push(fips);
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        for _ in 0..16 {
+            let mut k = [0_u8; 32];
+            for b in &mut k {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *b = (state >> 24) as u8;
+            }
+            keys.push(k);
+        }
+        for key in &keys {
+            assert_eq!(
+                software_key_schedule(key),
+                hardware_round_keys(key),
+                "software key schedule diverged from hardware"
+            );
+        }
     }
 }

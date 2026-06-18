@@ -85,11 +85,11 @@ assurance residuals rather than implementation defects.
 | [HRC-2026-01](#hrc-2026-01---aes-gcm-nonce-uniqueness-and-invocation-limits-are-not-enforced) | AES-GCM nonce uniqueness and invocation limits are not enforced | **Medium** | Mitigation available |
 | [HRC-2026-02](#hrc-2026-02---cpu-rng-only-reseed-narrows-post-compromise-recovery-to-the-cpu-vendor) | CPU-RNG-only reseed narrows post-compromise recovery to the CPU vendor | **Low** | Open (residual) |
 | [HRC-2026-03](#hrc-2026-03---rng-health-test-is-not-sp-800-90b-conformant) | RNG health test is not SP 800-90B-conformant | **Low** | Open |
-| [HRC-2026-04](#hrc-2026-04---unsafeffi-soundness-is-not-tool-verified) | Unsafe/FFI soundness is not tool-verified | **Low** | Open (residual) |
+| [HRC-2026-04](#hrc-2026-04---unsafeffi-soundness-is-not-tool-verified) | Unsafe/FFI soundness is not tool-verified | **Low** | Substantially addressed (Miri + Valgrind + sanitizers in CI) |
 | [HRC-2026-05](#hrc-2026-05---constant-time-assurance-is-empirical-not-formal) | Constant-time assurance is empirical, not formal | **Low** | Open (residual) |
 | [HRC-2026-06](#hrc-2026-06---ephemeral-stack-and-register-copies-of-key-material-are-not-wiped) | Ephemeral stack/register copies of key material are not wiped | Info | Open (inherent) |
 | [HRC-2026-07](#hrc-2026-07---drop-based-zeroization-is-defeated-by-memforget-and-leaks) | Drop-based zeroization is defeated by `mem::forget`/leaks | Info | Open (inherent) |
-| [HRC-2026-08](#hrc-2026-08---no-wycheproof-or-formal-coverage-of-ghash-aggregation-edge-cases) | No Wycheproof or formal coverage of GHASH aggregation edge cases | **Low** | Open |
+| [HRC-2026-08](#hrc-2026-08---no-wycheproof-or-formal-coverage-of-ghash-aggregation-edge-cases) | No Wycheproof or formal coverage of GHASH aggregation edge cases | **Low** | Resolved |
 | [HRC-2026-09](#hrc-2026-09---independent-review-and-cavp-validation-not-yet-performed) | Independent review and CAVP validation not yet performed | Info | Open |
 
 **Risk distribution:** 0 Critical / 0 High / 1 Medium / 4 Low / 4 Informational.
@@ -147,6 +147,13 @@ bounds.
 - Emitted-assembly inspection of secret-handling paths (`cargo-show-asm`).
 - A dudect-style statistical timing test (Welch's t-test) over decryption.
 - Dependency vulnerability scan (`cargo audit`).
+
+Subsequent assurance work (post-review) extended this with machine-checked
+proofs of the GHASH/POLYVAL field core, full-lifecycle Miri, Valgrind/ASan/TSan,
+NIST CAVP vectors, Project Wycheproof vectors, property-based and fuzz testing,
+and an RNG statistical battery - all CI-reproducible and mapped in
+[assurance.md](assurance.md). The per-finding "Update" notes below record where
+this changes a finding's status.
 
 **Standards consulted:** FIPS 197; NIST SP 800-38A, 800-38D, 800-90A Rev. 1,
 800-90B, 800-133 Rev. 2; FIPS 140-3 (terminology / non-conformance scoping);
@@ -468,6 +475,21 @@ a known vulnerability.
 optionally behind a cfg that stubs the intrinsics with a scalar reference path
 used only under Miri.
 
+**Update (assurance work; see [assurance.md](assurance.md) §1).** The
+recommendation is implemented and the gap is substantially closed. On x86 Miri
+implements the AES-NI and PCLMULQDQ intrinsics, so `cargo miri test --lib
+aes_gcm` now runs the **whole** AES-256-GCM/SIV key-state lifecycle and the real
+AES/GHASH code under Miri's UB checker (aliasing, provenance, out-of-bounds,
+uninitialized reads) and passes. The one intrinsic Miri lacks
+(`aeskeygenassist`) is routed under `cfg(miri)` through a software key schedule
+proven byte-identical to hardware by `software_schedule_matches_hardware`. Miri
+found a genuine Stacked Borrows violation on its first run - in a *test*, not
+production code - which was fixed. CI additionally runs Valgrind memcheck and
+ASan over the real AES-NI/PCLMULQDQ binary and TSan over the cross-thread paths.
+Residual: the AES-CTR generator's own `aeskeygenassist` keeps `random::` out of
+the Miri job (covered by Valgrind/ASan); aarch64 NEON crypto intrinsics are not
+yet modeled by Miri, so the Miri job runs on x86.
+
 ---
 
 ### HRC-2026-05 - Constant-time assurance is empirical, not formal
@@ -522,6 +544,15 @@ re-run them on compiler upgrades. Consider setting `PSTATE.DIT` around crypto
 sections on `aarch64` once stable intrinsics exist. Transient-execution
 attacks remain out of scope by design.
 
+**Update (assurance work; see [assurance.md](assurance.md) §2.3).** The
+constant-time verification *method* is now documented in full, including why the
+Valgrind-secret-poisoning (ctgrind) technique is deliberately not used here:
+memcheck's shadow-value propagation through the AES-NI/PCLMULQDQ SIMD
+instructions is incomplete on exactly this code, producing false positives. The
+guarantee remains statistical (dudect / Welch t-test) over the Rust glue plus
+the accepted vendor data-independent-timing guarantee for the instructions
+themselves; this finding's residual status is unchanged.
+
 ---
 
 ### HRC-2026-06 - Ephemeral stack and register copies of key material are not wiped
@@ -573,7 +604,7 @@ zeroization in Rust and is not specific to this library.
 | **Exploitability** | Low (dense differential corpus already exercises boundaries) |
 | **CVSS 3.1** | N/A (test-coverage gap) |
 | **Category** | Testing / assurance |
-| **Status** | Partially resolved (2026-06-18) - Wycheproof integrated; property-based and formal checks remain |
+| **Status** | Resolved - Wycheproof integrated; aggregation identity machine-checked for all inputs; property-based + fuzz coverage added |
 | **Location** | `tests/aes_gcm_interop.rs`; `tests/wycheproof_aes_gcm.rs`; `tests/wycheproof_aes_gcm_siv.rs`; `src/aes_gcm/ghash.rs` |
 
 **Description.** The 8-block aggregated GHASH reduction (section 7.2) is novel
@@ -613,6 +644,29 @@ third-party coverage in addition to the dense differential corpus. Residual:
 property-based/fuzz testing of the decrypt parser and a formal/computer-algebra
 proof of the aggregation identity are still open.
 
+**Update (assurance work; see [assurance.md](assurance.md) §1-2 and
+[proofs/](../proofs)).** The two remaining residuals are now closed, moving this
+finding to **Resolved**:
+
+- *Formal proof of the aggregation identity.* The GHASH/POLYVAL field core is
+  machine-checked correct **for every input**, faithfully to the exact intrinsic
+  sequence. `proofs/field_model.py` first pins a Python model to reality (it
+  reproduces, byte-for-byte, reference outputs captured from the running backend
+  `imp::mul` and equals the independent RFC 8452 POLYVAL `dot`), then:
+  `prove_multiply.py` proves the field multiply equals POLYVAL `dot` exhaustively
+  on all 128×128 standard-basis pairs (so, by bilinearity, on all inputs);
+  `prove_aggregation.py` proves the exact `mont_reduce ∘ karatsuba2` (aarch64)
+  and `reduce` (x86) reductions GF(2)-linear via Z3; `prove_ghash_identity.py`
+  proves the per-block Horner recurrence equals the sum-of-powers form the batch
+  path computes (sympy). Chained, the 8-/4-block aggregated path computes exactly
+  the specified accumulator for every input. `src/aes_gcm/ghash.rs`
+  (`aggregation_tests`) also checks the aggregated reduction equals per-block
+  evaluation at runtime. The `formal-proof` CI job runs the suite on every build.
+- *Property-based and fuzz testing of the decrypt parser.* `tests/proptest_aead.rs`
+  adds round-trip, tamper-rejection, and decrypt-parser-never-panics properties
+  for both modes (512 cases each); `fuzz/` adds differential and
+  parser-robustness fuzz targets on the attacker-controlled decrypt surface.
+
 ---
 
 ### HRC-2026-09 - Independent review and CAVP validation not yet performed
@@ -631,6 +685,18 @@ a library protects production data.
 **Recommendation.** Obtain independent third-party cryptographic review and,
 where the regulatory posture requires it, CAVP/CMVP validation before
 production deployment.
+
+**Update (assurance work; see [assurance.md](assurance.md) §3).** This finding
+remains **Open**: no independent third-party audit and no CAVP/CMVP accreditation
+has been performed, and none is claimed. What has been added is *functional*
+known-answer coverage from the official NIST CAVP GCM vectors -
+`tests/nist_cavp_gcm.rs` runs the full `Keylen=256 / IVlen=96 / Taglen=128`
+subset (375 encrypt + 375 decrypt, of which 191 are `FAIL`/tag-rejection
+records), vendored verbatim and public-domain (`NOTICE`). This is functional KAT
+coverage that exercises the same vectors an ACVP/CAVP run would, **not** CAVP
+accreditation. `assurance.md` §3 records the CAVP/CMVP readiness posture (spec
+mapping, vector coverage, fixed parameter set, reproducibility) for when an
+accredited engagement is funded.
 
 ---
 
@@ -899,8 +965,10 @@ patterns reviewed:
   `S3_3_C2_C4_1` with `cset ne` to read the success flag; `options(nostack,
   nomem)`; emission confirmed by inspection.
 
-No `unsafe`-related defect was identified. The assurance residual (no Miri /
-sanitizer coverage) is HRC-2026-04.
+No `unsafe`-related defect was identified. The original assurance residual was
+the lack of tool-based UB checking; per HRC-2026-04 this is now substantially
+addressed - CI runs full-lifecycle Miri over the AES-256-GCM/SIV paths on x86
+plus Valgrind memcheck, ASan, and TSan over the real intrinsic binary.
 
 ---
 
@@ -968,11 +1036,21 @@ audited; its current automated coverage is:
 | `aes_gcm_siv_interop` | 18 | RFC 8452 KAT (dual-asserted), RustCrypto differential + cross-decrypt, determinism, multi-size tamper, wrong key/nonce/AAD, error paths, decrypt-zeroize, dense plaintext + AAD sweeps |
 | `wycheproof_aes_gcm` | 66 vectors | Project Wycheproof AES-256-GCM (39 valid, 27 rejection) |
 | `wycheproof_aes_gcm_siv` | 103 vectors | Project Wycheproof AES-256-GCM-SIV (69 valid, 34 rejection, 5 counter-wrap) |
+| `nist_cavp_gcm` | 750 vectors | NIST CAVP AES-256-GCM 96/128 subset (375 encrypt + 375 decrypt, 191 FAIL/tag-rejection); byte-exact encrypt KATs under `hazmat-explicit-nonce` |
+| `ghash::aggregation_tests` (unit) | 3 | 8-/4-block aggregated reduction == per-block Horner; mixed batch/tail |
+| `aes::tests` (unit) | 1 | software key schedule (cfg(miri) path) == hardware round keys |
+| `proptest_aead` | 512×7 cases | round-trip + `*_to` consistency, single-byte tamper rejection, decrypt-parser-never-panics, construction-never-panics (both modes) |
+| `rng_statistical` | 3 | monobit / chi-square / serial-correlation sanity (PractRand/dieharder procedure in `docs/randomness-testing.md`) |
+| `fuzz/` | 4 targets | differential vs RustCrypto + decrypt-parser robustness (no panic / no UB), both modes |
+| `proofs/` | 3 proofs | machine-checked GHASH/POLYVAL field core for **all inputs** (basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity) |
 | `timing_constant_time` / `_siv` | 2 + 2 (ignored) | dudect harnesses for the GCM and SIV decrypt paths |
 
-This closes the Wycheproof gap (HRC-2026-08) for both modes. Remaining gaps are
-unchanged: property/fuzz testing of the decrypt parser, Miri (HRC-2026-04), and
-`x86_64` hardware-path execution on CI runners.
+This resolves the Wycheproof and formal-proof gap (HRC-2026-08) for both modes
+and the parser property/fuzz gap. The Miri/sanitizer gap (HRC-2026-04) is
+substantially addressed: CI runs full-lifecycle Miri over the AES-256-GCM/SIV
+paths on x86 plus Valgrind/ASan/TSan, and the `formal-proof` job runs the
+`proofs/` suite. The remaining gap is independent third-party review / CAVP
+accreditation (HRC-2026-09).
 
 ---
 
@@ -985,7 +1063,7 @@ review and differential/known-answer testing; **not** accredited validation.
 | --- | --- | --- |
 | FIPS 197 | AES-256 cipher and key schedule | Conforms (reviewed; KAT) |
 | NIST SP 800-38A | CTR mode | Conforms (reviewed) |
-| NIST SP 800-38D | AES-GCM, GHASH, J0, length limits | Conforms (reviewed; KAT + differential + Wycheproof) |
+| NIST SP 800-38D | AES-GCM, GHASH, J0, length limits | Conforms (reviewed; NIST CAVP KAT + differential + Wycheproof; GHASH core machine-checked for all inputs) |
 | RFC 8452 | AES-256-GCM-SIV, POLYVAL, key derivation | Conforms (KAT + differential + Wycheproof; **added post-audit**, not independently reviewed) |
 | RFC 5116 / 5288 | AEAD interface; 96-bit GCM nonce | Conforms (reviewed) |
 | NIST SP 800-90A Rev. 1 | CTR_DRBG | Modeled on; **not** conformant/validated (section 7.4) |
@@ -1004,10 +1082,10 @@ review and differential/known-answer testing; **not** accredited validation.
 | Per-key invocation limit exceeded | Low-Med | High | None enforced | HRC-2026-01 - caller duty |
 | Malicious CPU RNG + prior state leak | Low | High | OS-rooted seed + blend + stuck screen | HRC-2026-02 |
 | Compiler reintroduces secret branch | Low | High | `subtle` + `black_box`; asm-checked | HRC-2026-05 |
-| Latent `unsafe` UB | Low | Critical | Review + differential corpus | HRC-2026-04 - not Miri-proven |
+| Latent `unsafe` UB | Low | Critical | Review + differential corpus + full-lifecycle Miri (x86) + Valgrind/ASan/TSan in CI | HRC-2026-04 - substantially addressed |
 | Transient-execution leak of cache tier | Low-Med | High | Out of scope by design | Documented limitation |
 | Upstream vuln in vendored code | Low | Medium | Copied + attributed | Manual re-sync needed |
-| Aggregated-GHASH/POLYVAL latent defect | Low | High | Boundary-dense differential corpus + Project Wycheproof vectors (GCM and SIV) | HRC-2026-08 - Wycheproof now integrated; not formally proven |
+| Aggregated-GHASH/POLYVAL latent defect | Low | High | Boundary-dense differential corpus + Project Wycheproof vectors (GCM and SIV) + machine-checked field-core proofs (all inputs) | HRC-2026-08 - resolved |
 
 ---
 
