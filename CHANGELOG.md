@@ -59,6 +59,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **hax → F\* extraction of the composition** (`proofs/hax/extract.sh`): the
+  AES-256-GCM/SIV composition glue now extracts from the *actual Rust source* to
+  F\* via hax (toolchain built against hax's pinned nightly + the OCaml engine;
+  two `cfg(hax)` no-ops keep the RNG/fork-handler out of the importer). The F\*
+  proof itself (axiomatize the opaque backends, check the lemmas against the
+  SP 800-38D/RFC 8452 spec) is the remaining, well-scoped step. `cfg(hax)` is a
+  build-config no-op for normal builds and all other tooling.
 - **Proof-coverage map** (`docs/proof-coverage.md`): one table of every verified
   property with its method and an explicit trust level — compiled-code proof
   (Kani/Miri), all-inputs model proof (Z3/sympy/exhaustive), exhaustive vectors,

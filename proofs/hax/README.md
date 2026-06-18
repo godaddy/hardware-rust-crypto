@@ -1,10 +1,30 @@
-# hax / F\* extraction — attempted, blocked, documented
+# hax / F\* extraction — extraction working; F\* proof remaining
 
-This directory records an **honest attempt** to add an *extraction-based* proof of
-the AES-composition glue with [hax](https://github.com/hacspec/hax) (Cryspen) and
-F\*, and the exact steps to complete it. It did **not** land in the session that
-created it; nothing here claims a checked F\* proof exists. It is a runnable plan,
-not a result.
+This directory records progress toward an *extraction-based* proof of the
+AES-composition glue with [hax](https://github.com/hacspec/hax) (Cryspen) and F\*.
+
+**Status: the composition now extracts to F\*.** `./extract.sh` produces
+`proofs/fstar/extraction/*.fst` — the safe composition (`j0`,
+`increment_counter`, `nonce_value`, and the `seal`/`open`/SIV machinery)
+translated from the *actual Rust source* into F\* by hax, with the intrinsic
+AES/GHASH backends left as opaque calls. What is **not** yet done is the F\* side:
+axiomatizing those opaque backends and writing + checking the
+functional-correctness lemmas (the theorem `prove_composition.py` checks against
+a hand-written model). So this is no longer "blocked" — it is a working
+extraction pipeline plus a remaining, well-scoped F\* proof effort. No checked
+F\* proof is claimed yet.
+
+A sample of what hax emits — the real `increment_counter`, faithfully translated:
+
+```fstar
+let increment_counter (counter: t_Array u8 (mk_usize 16)) : t_Array u8 (mk_usize 16) =
+  let low_bytes:t_Array u8 (mk_usize 4) = Rust_primitives.Hax.repeat (mk_u8 0) (mk_usize 4) in
+  let low_bytes = Core_models.Slice.impl__copy_from_slice #u8 low_bytes
+      (counter.[ { f_start = mk_usize 12 } ] <: t_Slice u8) in
+  let low:u32 = Core_models.Num.impl_u32__wrapping_add
+      (Core_models.Num.impl_u32__from_be_bytes low_bytes <: u32) (mk_u32 1) in
+  ...   (* writes low.to_be_bytes() back into counter[12..] *)
+```
 
 ## Why this, and what it would add over what we already have
 
@@ -70,38 +90,58 @@ in `aes.rs`/`ghash.rs` are the same class of problem.
 So the true remaining work is **making the composition hax-ingestible**, not
 installing anything.
 
+### Session 3 — extraction working
+
+Both remaining issues were resolved:
+
+- **Crate ingestibility.** Under `cfg(hax)` (set automatically by hax), the RNG
+  module is excluded (`#[cfg(not(hax))] pub mod random;` in `lib.rs`) and the
+  fork-handler falls back to the process-id path (`src/aes_gcm/fork.rs`), so the
+  `pthread_atfork` fn pointer and the `RDSEED`/`RNDRRS` inline asm never reach the
+  importer. Both are no-ops for normal builds and all other tooling. The importer
+  then reads the whole crate without error.
+- **The OCaml engine.** hax 0.3.7's Rust engine delegates some F\* phases to the
+  OCaml `hax-engine`, which does need opam (`brew install opam node`, `opam init`,
+  `opam install ./engine`) plus the `hax-engine-names-extract` codegen tool. Built.
+
+With the full toolchain and the two `cfg(hax)` no-ops, `./extract.sh` produces
+nine F\* modules under `proofs/fstar/extraction/` (a `[HAX0008] reject_ArbitraryLhs`
+is reported for the in-place-mutating helpers, which hax's functional model does
+not translate; the by-value composition functions extract cleanly).
+
 ## Steps to complete it (reproducible plan)
 
-1. **Toolchain: done** — use the four commands above (driver + rust-engine built
-   against `nightly-2025-11-08`, `HAX_EXPERIMENTAL_FULL_DEF=true`).
-2. **Make the crate hax-ingestible.** The importer must not meet an unsupported
-   construct. Either (a) annotate every intrinsic/fn-pointer item the importer
-   reaches with hax's opacity attributes (`#[hax_lib::opaque]` / `#[hax_lib::exclude]`,
-   adding the `hax-lib` dev-dependency), or (b) lift the safe composition
-   (`seal`/`open`, `j0`, counters, `derive_keys`, `polyval_digest`, `siv_tag`,
-   `ctr_apply`) into a module written against **trait/abstract** AES and
-   authenticator interfaces, so the intrinsic backends are never in hax's import
-   path. (b) is cleaner but proves the lifted module, so it must *be* the shipped
-   code path, not a copy.
-3. **Extract** the composition with the backends as opaque `val E : block -> block`
-   etc., producing `proofs/fstar/extraction/*.fst`.
-4. **State the spec and prove with F\*.** Port the SP 800-38D / RFC 8452
-   definitions (already encoded in `prove_composition.py`) as an F\* reference and
-   prove the extracted functions equal it, given the axiomatized primitives —
-   the same theorem `prove_composition.py` checks with Z3, now over the extracted
-   source, removing the hand-translation trust step. (F\* itself still needs
-   installing to *check* the `.fst`; the Rust engine only *emits* it.)
+1. **Toolchain: done.** Build the four hax binaries against `nightly-2025-11-08`
+   and the OCaml engine via opam (see the prerequisites in `extract.sh`).
+2. **Ingestibility: done.** The two `cfg(hax)` no-ops in `lib.rs` and
+   `aes_gcm/fork.rs` keep the RNG / fork-handler out of the importer's path.
+3. **Extraction: done.** `./extract.sh` emits `proofs/fstar/extraction/*.fst`
+   with the intrinsic AES/GHASH backends as opaque calls.
+4. **State the spec and prove with F\* (remaining).** Install F\*
+   (`opam install fstar`), axiomatize the opaque AES/GHASH backends as
+   `assume val`s, port the SP 800-38D / RFC 8452 definitions (already encoded in
+   `prove_composition.py`) as an F\* reference, and prove the extracted functions
+   equal it. This is the same theorem `prove_composition.py` checks against a
+   hand-written model, now over the hax-extracted source — removing the
+   hand-translation trust step. A practical first milestone is to typecheck the
+   extracted modules (no proof, just well-formedness) against hax's F\* support
+   libraries, then add lemmas function by function (`increment_counter`,
+   `nonce_value`, `j0`, … first; the in-place `seal`/`open` helpers, which hax
+   currently rejects, need either a by-value reformulation or hax-side support).
 
 ## Honest status
 
-Not done, but materially advanced. The **toolchain is solved** (the binaries
-build against the pinned nightly and the F\* pipeline runs without opam — the
-original blocker is gone). The remaining work is **reformulating the composition
-so hax's importer can ingest it** (the crate's fn-pointers and intrinsics are
-outside hax's subset), then writing and checking the F\* proof. That is a real
-engineering effort, not a toolchain install.
+**Extraction works** (`./extract.sh` emits the F\* modules). What remains is the
+F\* proof itself: install F\* (`opam install fstar`), axiomatize the opaque
+AES/GHASH backends as `assume val`s, and write + check the functional-correctness
+lemmas relating the extracted composition to the SP 800-38D / RFC 8452 spec — the
+same theorem `prove_composition.py` checks against a hand-written model, now over
+the hax-extracted source. That is a bounded but non-trivial F\* effort and is not
+done; no checked F\* proof is claimed.
 
-In the meantime the intrinsic-free logic is already verified as *compiled code*
-by Kani, and the AES-calling composition glue is covered as a KAT-anchored model
-by `prove_composition.py`. Completing the hax route would upgrade that one piece
-from "proven model" to "proven extracted source."
+The extraction output is **not committed** (it is large and regenerable; see
+`proofs/.gitignore`). Until the F\* proof lands, the AES-calling composition glue
+remains covered as a KAT-anchored model by `prove_composition.py` (T2) and, for
+its intrinsic-free parts, as compiled code by the Kani harnesses (T1). Completing
+the F\* proof would upgrade the composition from "proven model" to "proven
+extracted source."

@@ -73,7 +73,7 @@ instruction) are at T3.
 
 | Item | Why it's open | Plan |
 | --- | --- | --- |
-| **Extraction-based proof of the AES-*calling* composition glue** (`seal`/`open`, SIV derivation) | These call the intrinsic backends, so CBMC/Kani can't reach them; `prove_composition.py` proves a faithful *model* (T2), not the compiled source. | hax/F\*. **Toolchain now solved** (driver + Rust engine build against the pinned nightly; F\* path needs no opam) — the live blocker is making the composition ingestible by hax's importer (the crate's fn-pointers/intrinsics are outside hax's subset). Full reproducible status in [`proofs/hax/README.md`](../proofs/hax/README.md). |
+| **Extraction-based proof of the AES-*calling* composition glue** (`seal`/`open`, SIV derivation) | These call the intrinsic backends, so CBMC/Kani can't reach them; `prove_composition.py` proves a faithful *model* (T2), not the compiled source. | hax/F\*. **Extraction now works** — `proofs/hax/extract.sh` emits the composition as F\* from the real source. Remaining: write + check the F\* lemmas (axiomatize the opaque backends, relate to the SP 800-38D/RFC 8452 spec). Full status in [`proofs/hax/README.md`](../proofs/hax/README.md). |
 | **`append_tag_nonce` functional proof** | `Vec` allocator modeling is impractical under CBMC. | Soundness is already Miri-covered (T1 for UB); a functional T1 proof awaits a lighter harness or a different tool. |
 | **Independent third-party audit / CAVP-CMVP accreditation** | Not performed; not claimed. | See `security-audit.md` HRC-2026-09 and `assurance.md` §3. |
 | **aarch64 under Miri** | Miri does not model NEON crypto intrinsics, so the Miri job runs on x86; aarch64 memory safety is Valgrind/ASan only (T4). | Track Miri intrinsic support. |

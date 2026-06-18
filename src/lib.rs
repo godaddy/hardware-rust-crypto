@@ -32,4 +32,9 @@
 //! are private; only the high-level types above are part of the public API.
 
 pub mod aes_gcm;
+// The `hax` cfg excludes the RNG module from hax/F* extraction: its `RDSEED`/
+// `RNDRRS` inline asm and `pthread_atfork` fn pointer are outside hax's
+// importable subset, and it is independent of the AEAD composition being
+// extracted. Normal builds and all other tooling compile it as usual.
+#[cfg(not(hax))]
 pub mod random;
