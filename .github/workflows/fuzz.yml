@@ -1,0 +1,41 @@
+name: Fuzz smoke
+
+# Short libFuzzer run per target (the decrypt parser, differential against
+# RustCrypto). Runs on every push/PR and is individually runnable. The deep
+# (30-min/target) run lives in heavy-assurance.yml.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz smoke (decrypt parser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      # A short run per target on every CI; deep fuzzing runs out of band. The
+      # decrypt targets are differential against RustCrypto and assert no panic
+      # / UB on arbitrary attacker-controlled input.
+      - name: Smoke-run fuzz targets
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::fuzz $target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=60 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done

@@ -1,0 +1,38 @@
+name: Z3/sympy proofs
+
+# Machine-checked proof suite over all inputs (Z3 SMT + sympy). Runs on every
+# push/PR and is individually runnable from the Actions tab ("Run workflow").
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proofs-z3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  formal-proof:
+    name: formal proof (field core + GHASH mapping)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: "3.12"
+      - name: Install Z3 and sympy
+        run: pip install z3-solver sympy
+      # Machine-checks, over all inputs, that the GHASH/POLYVAL core is correct:
+      # the field multiply == RFC 8452 POLYVAL (exhaustive basis), the exact
+      # reductions are GF(2)-linear (reduce-once is exact), the Horner recurrence
+      # == the batch sum-of-powers, and the ByteReverse+mulX+POLYVAL construction
+      # == NIST SP 800-38D GHASH. Plus prove_composition.py: the intrinsic-free
+      # AEAD glue (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt) ==
+      # SP 800-38D / RFC 8452 with AES/authenticator as oracles. The models are
+      # pinned to the real backend. See proofs/README.md and docs/assurance.md 2.1-2.2.
+      - name: Run the machine-checked proof suite
+        run: ./proofs/run_all.sh

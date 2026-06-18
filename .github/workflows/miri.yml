@@ -1,0 +1,47 @@
+name: Miri (UB checker)
+
+# Miri executes the aes_gcm key-state lifecycle and the real AES/GHASH paths
+# under its UB checker. Runs on every push/PR and is individually runnable.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: miri-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  miri:
+    name: miri (full unsafe lifecycle, x86)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly + miri
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly
+          components: miri
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Miri implements the x86 AES-NI (aesenc/aesenclast) and PCLMULQDQ
+      # intrinsics, so with those features enabled it executes the ENTIRE
+      # key-state lifecycle and the real AES/GHASH paths under its UB checker -
+      # aliasing, provenance, out-of-bounds, uninitialized memory. Key expansion
+      # (the one missing intrinsic, aeskeygenassist) is routed through the
+      # cfg(miri) software schedule, which `software_schedule_matches_hardware`
+      # proves byte-identical to the hardware path. aarch64 NEON crypto
+      # intrinsics are not yet implemented by Miri, hence x86 here.
+      # Runs the ENTIRE aes_gcm key-state lifecycle and the real AES/GHASH paths
+      # (GCM + SIV) under the UB checker. The AES-CTR generator backend
+      # (`random::`) has its own x86 key expansion still using aeskeygenassist,
+      # so it is excluded here and covered by Valgrind/ASan on the real binary;
+      # extending the cfg(miri) software schedule to it is a tracked follow-up.
+      - name: Miri test (aes_gcm lifecycle + crypto under the UB checker)
+        run: cargo +nightly miri test --lib aes_gcm
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2,+ssse3,+pclmulqdq"
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-strict-provenance
