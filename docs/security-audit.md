@@ -255,7 +255,7 @@ a CVSS 3.1 reference where one is meaningful, the affected **Location**,
 
 ---
 
-### HRC-2026-01 - AES-GCM nonce uniqueness and invocation limits are not enforced
+### HRC-2026-01 - AES-GCM nonce uniqueness residual in hazmat explicit-nonce mode
 
 | | |
 | --- | --- |
@@ -264,8 +264,8 @@ a CVSS 3.1 reference where one is meaningful, the affected **Location**,
 | **Exploitability** | Low (requires integrator misuse) |
 | **CVSS 3.1** | `AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N` -> 7.4 (conditional impact; see note) |
 | **Category** | Cryptography - key/IV management |
-| **Status** | Open on the caller-supplied-nonce API; a generated-nonce API provides a safe alternative |
-| **Location** | `src/aes_gcm/mod.rs` - `nonce_from_slice`, `validate_gcm_lengths`, public caller-supplied `encrypt*` APIs; mitigation in `nonce.rs` |
+| **Status** | Mitigated in the default API; residual risk remains only in the non-default `hazmat-explicit-nonce` feature |
+| **Location** | `src/aes_gcm/mod.rs` - default envelope APIs; hazmat caller-supplied helpers gated by `hazmat-explicit-nonce`; nonce construction in `nonce.rs` |
 
 **Description.** AES-GCM is catastrophically fragile to nonce reuse under a
 fixed key. Two messages encrypted with the same `(key, nonce)` pair leak the
@@ -275,15 +275,17 @@ also bounded in the number of invocations per key: for randomly generated
 96-bit IVs, NIST SP 800-38D section 8.3 limits a key to roughly 2^32 invocations to
 keep the IV-collision probability acceptably low.
 
-The library validates nonce *length* but performs no uniqueness tracking and
-enforces no per-key invocation counter. This matches the contract of `ring`
-and RustCrypto (a low-level primitive defers nonce management to the caller),
-but it means an integrator who generates random 96-bit nonces at high volume,
-or who reuses a nonce through a bug, receives no signal before the security
-property is lost.
+The default library API now owns nonce generation: `encrypt` and `encrypt_to`
+generate a nonce and return `ciphertext || tag || nonce`; `decrypt` and
+`decrypt_to` parse the nonce from that envelope. Low-level helper methods that
+accept caller-supplied nonces are gated behind the non-default
+`hazmat-explicit-nonce` feature. If that feature is enabled, the helper path
+validates nonce *length* but performs no uniqueness tracking and enforces no
+per-key invocation counter, matching the contract of `ring` and RustCrypto.
 
-**Evidence.** The caller-supplied-nonce path validates length only
-(`nonce_from_slice` in `src/aes_gcm/mod.rs`):
+**Evidence.** The default encrypt path takes no nonce parameter and appends the
+generated nonce to the envelope. The hazmat caller-supplied-nonce path
+validates length only (`nonce_from_slice` in `src/aes_gcm/mod.rs`):
 
 ```rust
 fn nonce_from_slice(nonce: &[u8]) -> Result<[u8; NONCE_SIZE], Error> {
@@ -291,39 +293,37 @@ fn nonce_from_slice(nonce: &[u8]) -> Result<[u8; NONCE_SIZE], Error> {
 }
 ```
 
-`encrypt(nonce, aad, plaintext)` accepts any 12-byte value with no uniqueness
-or invocation-count check.
+When `hazmat-explicit-nonce` is enabled, `encrypt_with_nonce(nonce, aad,
+plaintext)` accepts any 12-byte value with no uniqueness or invocation-count
+check.
 
-**Impact.** If the integration layer reuses a `(key, nonce)` pair, an A1
-adversary observing two ciphertexts can recover `H` and forge arbitrary
+**Impact.** If a caller enables the hazmat API and reuses a `(key, nonce)` pair,
+an A1 adversary observing two ciphertexts can recover `H` and forge arbitrary
 authenticated ciphertexts under that key, and can recover plaintext XOR. The
 CVSS base of 7.4 reflects this *conditional* impact; the assessed Risk is
-**Medium**, not High, because exploitation requires an integration defect and
-correct usage avoids it. This divergence is a known limitation of CVSS for
-secure-by-default API gaps.
+**Medium**, not High, because the default API removes the nonce parameter and
+exploitation requires deliberate use of the hazmat surface plus an integration
+defect.
 
-**Mitigation.** The library provides generated-nonce APIs -
-`encrypt_with_generated_nonce` and `encrypt_nonce_appended_generated`
-(`src/aes_gcm/nonce.rs`) - that own nonce uniqueness so the
-caller cannot reuse one. The construction is `nonce = (salt + counter) mod
+**Mitigation.** The default API owns nonce uniqueness so the caller cannot
+reuse one accidentally. The construction is `nonce = (salt + counter) mod
 2^96`, with `salt` a 96-bit value drawn from the OS (re-drawn on fork) and
 `counter` a per-instance 64-bit value (see section 7.6). Within an instance
 uniqueness is guaranteed; across instances the residual is a sub-random 96-bit
 base-range overlap. This *prevents* reuse but, being plain AES-GCM, does not
-*survive* it - a call site that cannot guarantee unique nonces still needs a
-misuse-resistant mode. The caller-supplied-nonce path is unenforced, so the
-finding is open for that path.
+*survive* it - a call site that cannot trust local nonce state still needs a
+misuse-resistant mode.
 
 **Recommendation.**
-1. For call sites that do not need to control the nonce, default to the
-   generated-nonce APIs.
-2. Document the nonce-uniqueness contract and the SP 800-38D section 8.3 per-key
-   invocation limit prominently on the caller-supplied-nonce API, with the
-   failure mode stated explicitly.
+1. Keep caller-supplied-nonce helpers out of the default API and public
+   examples; require explicit opt-in through `hazmat-explicit-nonce`.
+2. Document the nonce-uniqueness contract and the SP 800-38D section 8.3
+   per-key invocation limit prominently on the hazmat API, with the failure
+   mode stated explicitly.
 3. Where a deterministic nonce is required, use the SP 800-38D section 8.2.1
    construction or rotate keys before 2^32 invocations.
 4. Consider offering an AES-GCM-SIV (RFC 8452) misuse-resistant mode for call
-   sites that cannot guarantee uniqueness at all.
+   sites that cannot trust local nonce uniqueness at all.
 
 ---
 
@@ -804,9 +804,9 @@ stuck-output detector, not the full SP 800-90B RCT+APT suite (HRC-2026-03).
 
 ### 7.6 Generated-nonce construction (`nonce.rs`)
 
-For callers that do not supply their own nonce, `encrypt_with_generated_nonce`
-and `encrypt_nonce_appended_generated` produce a unique 96-bit nonce as
-`nonce = (salt + counter) mod 2^96`:
+The default `encrypt` and `encrypt_to` APIs produce a unique 96-bit nonce and
+append it to the returned envelope as `ciphertext || tag || nonce`. The nonce
+is constructed as `nonce = (salt + counter) mod 2^96`:
 
 - `salt` is a 96-bit value drawn from the OS (`getrandom`) only -- never the
   CPU RNG or the AES-CTR generator -- at first use and re-drawn on fork (and on
@@ -940,9 +940,9 @@ Executed at the reviewed commit (`--workspace --all-targets`):
 
 | Suite | Tests | Coverage |
 | --- | ---: | --- |
-| `hardware-aes-gcm` unit | 20 | length/limit validation, layout, placement, wipe-on-drop, thread sharing, caller-buffer paths, generated-nonce round-trip/uniqueness |
+| `hardware-aes-gcm` unit | 26 | length/limit validation, envelope layout, placement, wipe-on-drop, thread sharing, caller-buffer paths, default/generated-nonce round-trip/uniqueness |
 | `hardware-random` unit | 14 | KAT, contiguity, reseed, fork (incl. real `fork()`), blend determinism, stuck-output, state size |
-| `aes_gcm_interop` | 7 | RustCrypto/ring differential + cross-decrypt, NIST KAT, tamper sweep, dense length sweep |
+| `aes_gcm_interop` | 9 | default envelope RustCrypto/ring differential + cross-decrypt, NIST KAT decrypt, tamper sweep, dense length sweep |
 | `random` integration | 1 | public-API smoke |
 | `timing_constant_time` | 2 (ignored) | dudect harness, run manually |
 

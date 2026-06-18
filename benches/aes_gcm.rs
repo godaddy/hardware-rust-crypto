@@ -40,22 +40,15 @@ fn bench_encrypt(c: &mut Criterion) {
         let plaintext = vec![0xa5; size];
 
         group.bench_function(format!("candidate/{size}"), |b| {
-            let key = HardwareAes256Gcm::new(&KEY).unwrap();
-            let mut ctr = 0_u64;
-            b.iter(|| {
-                ctr = ctr.wrapping_add(1);
-                key.encrypt(&nonce(ctr), AAD, black_box(&plaintext))
-                    .unwrap()
-            });
+            let mut key = HardwareAes256Gcm::new(&KEY).unwrap();
+            b.iter(|| key.encrypt(AAD, black_box(&plaintext)).unwrap());
         });
 
         group.bench_function(format!("candidate-noalloc/{size}"), |b| {
-            let key = HardwareAes256Gcm::new(&KEY).unwrap();
-            let mut out = vec![0_u8; size + TAG_SIZE];
-            let mut ctr = 0_u64;
+            let mut key = HardwareAes256Gcm::new(&KEY).unwrap();
+            let mut out = vec![0_u8; size + TAG_SIZE + NONCE_SIZE];
             b.iter(|| {
-                ctr = ctr.wrapping_add(1);
-                key.encrypt_to(&nonce(ctr), AAD, black_box(&plaintext), &mut out)
+                key.encrypt_to(AAD, black_box(&plaintext), &mut out)
                     .unwrap()
             });
         });
@@ -107,12 +100,12 @@ fn bench_decrypt(c: &mut Criterion) {
         let plaintext = vec![0xa5; size];
         let nonce = nonce(size as u64);
 
-        let candidate_key = HardwareAes256Gcm::new(&KEY).unwrap();
-        let candidate_ct = candidate_key.encrypt(&nonce, AAD, &plaintext).unwrap();
+        let mut candidate_key = HardwareAes256Gcm::new(&KEY).unwrap();
+        let candidate_envelope = candidate_key.encrypt(AAD, &plaintext).unwrap();
         group.bench_function(format!("candidate/{size}"), |b| {
             b.iter(|| {
                 candidate_key
-                    .decrypt(&nonce, AAD, black_box(&candidate_ct))
+                    .decrypt(AAD, black_box(&candidate_envelope))
                     .unwrap()
             });
         });
@@ -121,7 +114,7 @@ fn bench_decrypt(c: &mut Criterion) {
             let mut out = vec![0_u8; size];
             b.iter(|| {
                 candidate_key
-                    .decrypt_to(&nonce, AAD, black_box(&candidate_ct), &mut out)
+                    .decrypt_to(AAD, black_box(&candidate_envelope), &mut out)
                     .unwrap()
             });
         });
@@ -179,6 +172,7 @@ fn bench_decrypt(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "hazmat-explicit-nonce")]
 fn bench_encrypt_nonce_appended(c: &mut Criterion) {
     let mut group = c.benchmark_group("aes-256-gcm encrypt nonce-appended");
     for size in SIZES {
@@ -286,6 +280,7 @@ fn bench_key_setup(c: &mut Criterion) {
 
 fn bench_aes_gcm(c: &mut Criterion) {
     bench_encrypt(c);
+    #[cfg(feature = "hazmat-explicit-nonce")]
     bench_encrypt_nonce_appended(c);
     bench_decrypt(c);
     bench_key_setup(c);

@@ -38,6 +38,8 @@
 use std::hint::black_box;
 use std::time::Instant;
 
+use aes_gcm_siv::aead::{Aead as _, KeyInit as _, Payload};
+use aes_gcm_siv::{Aes256GcmSiv, Nonce as RustCryptoNonce};
 use hardware_rust_crypto::aes_gcm::{HardwareAes256GcmSiv, NONCE_SIZE, TAG_SIZE};
 
 const KEY: [u8; 32] = [0x42; 32];
@@ -86,7 +88,7 @@ fn welch_t(a: &Stats, b: &Stats) -> f64 {
 
 fn time_decrypt(key: &HardwareAes256GcmSiv, ciphertext: &[u8]) -> u64 {
     let start = Instant::now();
-    let result = key.decrypt(black_box(&NONCE), black_box(&[]), black_box(ciphertext));
+    let result = key.decrypt(black_box(&[]), black_box(ciphertext));
     black_box(&result);
     u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
@@ -138,8 +140,8 @@ fn measure(label: &str, key: &HardwareAes256GcmSiv, mut prep: impl FnMut(bool) -
 fn siv_tag_comparison_independent_of_mismatch_position() {
     let key = HardwareAes256GcmSiv::new(&KEY).unwrap();
     let plaintext = [0xa5_u8; MSG_LEN];
-    let base = key.encrypt(&NONCE, &[], &plaintext).unwrap();
-    let tag_start = base.len() - TAG_SIZE;
+    let base = encrypt_envelope_with_nonce(&NONCE, &plaintext);
+    let tag_start = base.len() - TAG_SIZE - NONCE_SIZE;
 
     // Both inputs fail authentication; they differ only in which stored-tag
     // byte was flipped (first versus last). A constant-time comparison plus a
@@ -147,7 +149,7 @@ fn siv_tag_comparison_independent_of_mismatch_position() {
     let mut early_mismatch = base.clone();
     early_mismatch[tag_start] ^= 0x01;
     let mut late_mismatch = base;
-    *late_mismatch.last_mut().unwrap() ^= 0x01;
+    late_mismatch[tag_start + TAG_SIZE - 1] ^= 0x01;
 
     let t = measure("siv-tag-mismatch-position", &key, |class| {
         if class {
@@ -177,15 +179,19 @@ fn siv_decrypt_timing_independent_of_ciphertext_content() {
         (rng_state >> 24) as u8
     };
     let low_pool: Vec<Vec<u8>> = (0..POOL)
-        .map(|p| key.encrypt(&NONCE, &[], &[p as u8; MSG_LEN]).unwrap())
+        .map(|p| {
+            let nonce = nonce_for_pool_entry(p);
+            encrypt_envelope_with_nonce(&nonce, &[p as u8; MSG_LEN])
+        })
         .collect();
     let high_pool: Vec<Vec<u8>> = (0..POOL)
-        .map(|_| {
+        .map(|p| {
             let mut plaintext = [0_u8; MSG_LEN];
             for byte in &mut plaintext {
                 *byte = next_byte();
             }
-            key.encrypt(&NONCE, &[], &plaintext).unwrap()
+            let nonce = nonce_for_pool_entry(POOL + p);
+            encrypt_envelope_with_nonce(&nonce, &plaintext)
         })
         .collect();
 
@@ -203,4 +209,25 @@ fn siv_decrypt_timing_independent_of_ciphertext_content() {
         t < T_THRESHOLD,
         "SIV decrypt timing distinguishes ciphertext content (|t| = {t:.3} >= {T_THRESHOLD})"
     );
+}
+
+fn encrypt_envelope_with_nonce(nonce: &[u8; NONCE_SIZE], plaintext: &[u8]) -> Vec<u8> {
+    let key = Aes256GcmSiv::new_from_slice(&KEY).unwrap();
+    let mut envelope = key
+        .encrypt(
+            RustCryptoNonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad: &[],
+            },
+        )
+        .unwrap();
+    envelope.extend_from_slice(nonce);
+    envelope
+}
+
+fn nonce_for_pool_entry(entry: usize) -> [u8; NONCE_SIZE] {
+    let mut nonce = NONCE;
+    nonce[4..].copy_from_slice(&(entry as u64).to_be_bytes());
+    nonce
 }

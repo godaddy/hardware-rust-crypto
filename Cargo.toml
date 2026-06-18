@@ -33,6 +33,11 @@ default = ["cpu-rng-reseed"]
 # fallback; uses only core::arch, so it adds no dependency. Disable to always
 # reseed from the OS.
 cpu-rng-reseed = []
+# Exposes low-level AES-GCM entry points that accept caller-supplied nonces.
+# This is intentionally not part of the default API because GCM nonce reuse is
+# catastrophic. Prefer the default envelope API, which generates nonces and
+# appends them to ciphertext.
+hazmat-explicit-nonce = []
 
 [dependencies]
 # getrandom supplies OS entropy for seeding and for the 96-bit nonce salt; it

@@ -1,7 +1,8 @@
 //! Interoperability and correctness tests for the hardware AES-256-GCM-SIV
 //! path: RFC 8452 known-answer vectors, byte compatibility with `RustCrypto`
-//! `aes-gcm-siv`, exhaustive length/tamper sweeps, error-path coverage, the
-//! SIV determinism property, and the zeroize-on-failure security guarantee.
+//! once the generated nonce is parsed from the default envelope, exhaustive
+//! length/tamper sweeps, error-path coverage, and the zeroize-on-failure
+//! security guarantee.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -39,6 +40,50 @@ fn reference_decrypt(
 ) -> Result<Vec<u8>, aes_gcm_siv::Error> {
     let cipher = Aes256GcmSiv::new_from_slice(key).unwrap();
     cipher.decrypt(RustCryptoNonce::from_slice(nonce), Payload { msg: ct, aad })
+}
+
+fn envelope_ciphertext_tag(envelope: &[u8]) -> &[u8] {
+    assert!(envelope.len() >= TAG_SIZE + NONCE_SIZE);
+    &envelope[..envelope.len() - NONCE_SIZE]
+}
+
+fn envelope_nonce(envelope: &[u8]) -> [u8; NONCE_SIZE] {
+    assert!(envelope.len() >= TAG_SIZE + NONCE_SIZE);
+    envelope[envelope.len() - NONCE_SIZE..]
+        .try_into()
+        .expect("nonce length")
+}
+
+fn envelope_from_parts(ciphertext_tag: &[u8], nonce: &[u8; NONCE_SIZE]) -> Vec<u8> {
+    let mut envelope = Vec::with_capacity(ciphertext_tag.len() + NONCE_SIZE);
+    envelope.extend_from_slice(ciphertext_tag);
+    envelope.extend_from_slice(nonce);
+    envelope
+}
+
+fn assert_default_envelope_matches_reference(
+    key: &[u8; 32],
+    aad: &[u8],
+    plaintext: &[u8],
+    envelope: &[u8],
+    context: &str,
+) {
+    let nonce = envelope_nonce(envelope);
+    assert_eq!(
+        envelope.len(),
+        plaintext.len() + TAG_SIZE + NONCE_SIZE,
+        "{context}: envelope length"
+    );
+    assert_eq!(
+        envelope_ciphertext_tag(envelope),
+        reference_encrypt(key, &nonce, aad, plaintext),
+        "{context}: ciphertext || tag mismatch"
+    );
+    assert_eq!(
+        reference_decrypt(key, &nonce, aad, envelope_ciphertext_tag(envelope)).unwrap(),
+        plaintext,
+        "{context}: RustCrypto could not decrypt candidate envelope"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +146,7 @@ const RFC8452_VECTORS: &[Kat] = &[
 ];
 
 #[test]
-fn rfc8452_known_answer_vectors() {
+fn rfc8452_known_answer_vectors_decrypt_from_envelope() {
     for (index, kat) in RFC8452_VECTORS.iter().enumerate() {
         let key = hex32(kat.key);
         let nonce = hex12(kat.nonce);
@@ -109,33 +154,34 @@ fn rfc8452_known_answer_vectors() {
         let pt = hex(kat.plaintext);
         let expected = hex(kat.result);
 
-        // Structural self-check: a mistranscribed vector is caught here, not by
-        // a confusing crypto mismatch downstream.
         assert_eq!(
             expected.len(),
             pt.len() + TAG_SIZE,
             "vector {index}: result length must be plaintext + tag"
         );
-
-        let candidate = HardwareAes256GcmSiv::new(&key).unwrap();
-        let ct = candidate.encrypt(&nonce, &aad, &pt).unwrap();
-
         assert_eq!(
-            ct, expected,
-            "vector {index}: ciphertext != RFC 8452 known answer"
-        );
-        // Independent corroboration: the same inputs through RustCrypto.
-        assert_eq!(
-            ct,
+            expected,
             reference_encrypt(&key, &nonce, &aad, &pt),
-            "vector {index}: candidate != RustCrypto reference"
+            "vector {index}: hardcoded vector != RustCrypto reference"
         );
-        // The open path must recover the plaintext from the KAT ciphertext.
+
+        let mut candidate = HardwareAes256GcmSiv::new(&key).unwrap();
+        let vector_envelope = envelope_from_parts(&expected, &nonce);
         assert_eq!(
-            candidate.decrypt(&nonce, &aad, &expected).unwrap(),
+            candidate.decrypt(&aad, &vector_envelope).unwrap(),
             pt,
             "vector {index}: decrypt"
         );
+
+        let generated = candidate.encrypt(&aad, &pt).unwrap();
+        assert_default_envelope_matches_reference(
+            &key,
+            &aad,
+            &pt,
+            &generated,
+            &format!("vector {index}: generated envelope"),
+        );
+        assert_eq!(candidate.decrypt(&aad, &generated).unwrap(), pt);
     }
 }
 
@@ -144,137 +190,185 @@ fn rfc8452_known_answer_vectors() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn candidate_encrypts_same_bytes_as_rustcrypto() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    let candidate_ct = candidate.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-    assert_eq!(
-        candidate_ct,
-        reference_encrypt(&KEY, &NONCE, AAD, PLAINTEXT)
-    );
+fn default_encrypt_matches_rustcrypto_for_embedded_nonce() {
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let envelope = candidate.encrypt(AAD, PLAINTEXT).unwrap();
+    assert_default_envelope_matches_reference(&KEY, AAD, PLAINTEXT, &envelope, "default encrypt");
+    assert_eq!(candidate.decrypt(AAD, &envelope).unwrap(), PLAINTEXT);
 }
 
 #[test]
 fn candidate_and_rustcrypto_decrypt_each_other() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
 
-    let candidate_ct = candidate.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
+    let candidate_envelope = candidate.encrypt(AAD, PLAINTEXT).unwrap();
+    let candidate_nonce = envelope_nonce(&candidate_envelope);
     assert_eq!(
-        reference_decrypt(&KEY, &NONCE, AAD, &candidate_ct).unwrap(),
+        reference_decrypt(
+            &KEY,
+            &candidate_nonce,
+            AAD,
+            envelope_ciphertext_tag(&candidate_envelope)
+        )
+        .unwrap(),
         PLAINTEXT
     );
 
     let reference_ct = reference_encrypt(&KEY, &NONCE, AAD, PLAINTEXT);
+    let reference_envelope = envelope_from_parts(&reference_ct, &NONCE);
     assert_eq!(
-        candidate.decrypt(&NONCE, AAD, &reference_ct).unwrap(),
+        candidate.decrypt(AAD, &reference_envelope).unwrap(),
         PLAINTEXT
     );
 }
 
-// ---------------------------------------------------------------------------
-// Determinism: the defining property of an SIV mode.
-// ---------------------------------------------------------------------------
+#[test]
+fn default_layout_is_ciphertext_tag_nonce() {
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let envelope = candidate.encrypt(&[], PLAINTEXT).unwrap();
+    let nonce = envelope_nonce(&envelope);
+
+    assert_eq!(envelope.len(), PLAINTEXT.len() + TAG_SIZE + NONCE_SIZE);
+    assert_eq!(candidate.decrypt(&[], &envelope).unwrap(), PLAINTEXT);
+
+    let prefix = reference_encrypt(&KEY, &nonce, &[], PLAINTEXT);
+    assert_eq!(envelope_ciphertext_tag(&envelope), prefix.as_slice());
+}
 
 #[test]
-fn encryption_is_deterministic() {
-    // Same (key, nonce, aad, plaintext) -> identical ciphertext, across repeated
-    // calls and across independent key-state instances.
-    let a = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    let b = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    let ct1 = a.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-    let ct2 = a.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-    let ct3 = b.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-    assert_eq!(ct1, ct2);
-    assert_eq!(ct1, ct3);
+fn default_encrypt_generates_distinct_nonces() {
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let first = candidate.encrypt(AAD, PLAINTEXT).unwrap();
+    let second = candidate.encrypt(AAD, PLAINTEXT).unwrap();
 
-    // Changing only the nonce changes the whole ciphertext (tag included).
-    let mut other_nonce = NONCE;
-    other_nonce[0] ^= 1;
-    assert_ne!(a.encrypt(&other_nonce, AAD, PLAINTEXT).unwrap(), ct1);
+    assert_ne!(envelope_nonce(&first), envelope_nonce(&second));
+    assert_ne!(first, second);
+    assert_eq!(candidate.decrypt(AAD, &first).unwrap(), PLAINTEXT);
+    assert_eq!(candidate.decrypt(AAD, &second).unwrap(), PLAINTEXT);
 }
 
 // ---------------------------------------------------------------------------
-// Nonce-appended layouts and the remaining API surface.
+// Explicit-nonce escape hatch coverage.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "hazmat-explicit-nonce")]
 #[test]
-fn nonce_appended_is_ciphertext_tag_nonce() {
+fn explicit_nonce_encryption_is_deterministic() {
+    let a = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let b = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let ct1 = a.encrypt_with_nonce(&NONCE, AAD, PLAINTEXT).unwrap();
+    let ct2 = a.encrypt_with_nonce(&NONCE, AAD, PLAINTEXT).unwrap();
+    let ct3 = b.encrypt_with_nonce(&NONCE, AAD, PLAINTEXT).unwrap();
+    assert_eq!(ct1, ct2);
+    assert_eq!(ct1, ct3);
+
+    let mut other_nonce = NONCE;
+    other_nonce[0] ^= 1;
+    assert_ne!(
+        a.encrypt_with_nonce(&other_nonce, AAD, PLAINTEXT).unwrap(),
+        ct1
+    );
+}
+
+#[cfg(feature = "hazmat-explicit-nonce")]
+#[test]
+fn explicit_nonce_appended_layout_and_in_place_round_trip() {
     let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
     let layout = candidate.encrypt_nonce_appended(&NONCE, PLAINTEXT).unwrap();
 
-    assert_eq!(&layout[layout.len() - NONCE_SIZE..], NONCE);
+    assert_eq!(envelope_nonce(&layout), NONCE);
     assert_eq!(layout.len(), PLAINTEXT.len() + TAG_SIZE + NONCE_SIZE);
     assert_eq!(
         candidate.decrypt_nonce_appended(&layout).unwrap(),
         PLAINTEXT
     );
+    assert_eq!(
+        envelope_ciphertext_tag(&layout),
+        reference_encrypt(&KEY, &NONCE, &[], PLAINTEXT)
+    );
 
-    let prefix = reference_encrypt(&KEY, &NONCE, &[], PLAINTEXT);
-    assert_eq!(&layout[..layout.len() - NONCE_SIZE], prefix.as_slice());
-}
-
-#[test]
-fn nonce_appended_in_place_round_trips() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    let mut buffer = PLAINTEXT.to_vec();
+    let mut in_place = PLAINTEXT.to_vec();
     candidate
-        .encrypt_nonce_appended_in_place(&NONCE, &mut buffer)
+        .encrypt_nonce_appended_in_place(&NONCE, &mut in_place)
         .unwrap();
-    assert_eq!(buffer.len(), PLAINTEXT.len() + TAG_SIZE + NONCE_SIZE);
+    assert_eq!(in_place, layout);
+}
+
+#[cfg(feature = "hazmat-explicit-nonce")]
+#[test]
+fn rejects_invalid_explicit_nonce_length() {
+    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
     assert_eq!(
-        candidate.decrypt_nonce_appended(&buffer).unwrap(),
-        PLAINTEXT
+        candidate
+            .encrypt_with_nonce(&[0_u8; NONCE_SIZE - 1], AAD, PLAINTEXT)
+            .err(),
+        Some(Error::InvalidNonceLength)
+    );
+    assert_eq!(
+        candidate
+            .encrypt_with_nonce(&[0_u8; NONCE_SIZE + 1], AAD, PLAINTEXT)
+            .err(),
+        Some(Error::InvalidNonceLength)
+    );
+    let ct = candidate
+        .encrypt_with_nonce(&NONCE, AAD, PLAINTEXT)
+        .unwrap();
+    assert_eq!(
+        candidate
+            .decrypt_with_nonce(&[0_u8; NONCE_SIZE + 1], AAD, &ct)
+            .err(),
+        Some(Error::InvalidNonceLength)
     );
 }
 
-#[test]
-fn generated_nonce_round_trips() {
-    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    let (nonce, ciphertext) = candidate
-        .encrypt_with_generated_nonce(AAD, PLAINTEXT)
-        .unwrap();
-    assert_eq!(
-        candidate.decrypt(&nonce, AAD, &ciphertext).unwrap(),
-        PLAINTEXT
-    );
-
-    let framed = candidate
-        .encrypt_nonce_appended_generated(PLAINTEXT)
-        .unwrap();
-    assert_eq!(
-        candidate.decrypt_nonce_appended(&framed).unwrap(),
-        PLAINTEXT
-    );
-}
+// ---------------------------------------------------------------------------
+// Allocation and caller-placed API variants.
+// ---------------------------------------------------------------------------
 
 #[test]
-fn inline_and_caller_placed_match_owned() {
-    let owned = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    let owned_layout = owned.encrypt_nonce_appended(&NONCE, PLAINTEXT).unwrap();
-
-    let inline = HardwareAes256GcmSivKeyState::new(&KEY).unwrap();
-    let inline_layout = inline.encrypt_nonce_appended(&NONCE, PLAINTEXT).unwrap();
-    assert_eq!(inline_layout, owned_layout);
-    assert_eq!(
-        inline.decrypt_nonce_appended(&inline_layout).unwrap(),
-        PLAINTEXT
+fn inline_and_caller_placed_default_envelopes_round_trip() {
+    let mut owned = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let owned_envelope = owned.encrypt(AAD, PLAINTEXT).unwrap();
+    assert_default_envelope_matches_reference(
+        &KEY,
+        AAD,
+        PLAINTEXT,
+        &owned_envelope,
+        "owned default",
     );
+    assert_eq!(owned.decrypt(AAD, &owned_envelope).unwrap(), PLAINTEXT);
 
-    let placed = with_placed_state(|placed| {
-        let ct = placed.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-        assert_eq!(ct, reference_encrypt(&KEY, &NONCE, AAD, PLAINTEXT));
-        assert_eq!(placed.decrypt(&NONCE, AAD, &ct).unwrap(), PLAINTEXT);
-        ct
+    let mut inline = HardwareAes256GcmSivKeyState::new(&KEY).unwrap();
+    let inline_envelope = inline.encrypt(AAD, PLAINTEXT).unwrap();
+    assert_default_envelope_matches_reference(
+        &KEY,
+        AAD,
+        PLAINTEXT,
+        &inline_envelope,
+        "inline default",
+    );
+    assert_eq!(inline.decrypt(AAD, &inline_envelope).unwrap(), PLAINTEXT);
+
+    with_placed_state(|placed| {
+        let placed_envelope = placed.encrypt(AAD, PLAINTEXT).unwrap();
+        assert_default_envelope_matches_reference(
+            &KEY,
+            AAD,
+            PLAINTEXT,
+            &placed_envelope,
+            "caller-placed default",
+        );
+        assert_eq!(placed.decrypt(AAD, &placed_envelope).unwrap(), PLAINTEXT);
     });
-    assert_eq!(&placed[placed.len() - TAG_SIZE..].len(), &TAG_SIZE);
 }
 
-fn with_placed_state<R>(f: impl FnOnce(&HardwareAes256GcmSivIn<'_>) -> R) -> R {
+fn with_placed_state<R>(f: impl FnOnce(&mut HardwareAes256GcmSivIn<'_>) -> R) -> R {
     let layout = HardwareAes256GcmSiv::key_state_layout();
     let mut storage = vec![0_u8; layout.size + layout.align];
     let offset = storage.as_ptr().align_offset(layout.align);
     let slot = SivUninitKeyStateSlot::new(&mut storage[offset..offset + layout.size]).unwrap();
-    let placed = HardwareAes256GcmSivIn::new_in(&KEY, slot).unwrap();
-    f(&placed)
+    let mut placed = HardwareAes256GcmSivIn::new_in(&KEY, slot).unwrap();
+    f(&mut placed)
 }
 
 // ---------------------------------------------------------------------------
@@ -283,36 +377,27 @@ fn with_placed_state<R>(f: impl FnOnce(&HardwareAes256GcmSivIn<'_>) -> R) -> R {
 
 #[test]
 fn every_single_byte_tamper_fails_across_sizes() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
     for size in [0_usize, 1, 15, 16, 17, 31, 32, 64, 127, 128, 129] {
         let plaintext = vec![0xa5_u8; size];
-        let ciphertext = candidate.encrypt(&NONCE, AAD, &plaintext).unwrap();
+        let envelope = candidate.encrypt(AAD, &plaintext).unwrap();
 
-        // Flip every bit position of every byte of ciphertext||tag.
-        for byte_index in 0..ciphertext.len() {
+        for byte_index in 0..envelope.len() {
             for bit in [0x01_u8, 0x80] {
-                let mut tampered = ciphertext.clone();
+                let mut tampered = envelope.clone();
                 tampered[byte_index] ^= bit;
                 assert!(
-                    candidate.decrypt(&NONCE, AAD, &tampered).is_err(),
+                    candidate.decrypt(AAD, &tampered).is_err(),
                     "size {size}: tampered byte {byte_index} bit {bit:#x} authenticated"
                 );
             }
         }
 
-        // Tampered AAD and nonce must also fail.
         if !AAD.is_empty() {
             let mut tampered_aad = AAD.to_vec();
             tampered_aad[0] ^= 0x80;
-            assert!(candidate
-                .decrypt(&NONCE, &tampered_aad, &ciphertext)
-                .is_err());
+            assert!(candidate.decrypt(&tampered_aad, &envelope).is_err());
         }
-        let mut tampered_nonce = NONCE;
-        tampered_nonce[0] ^= 0x80;
-        assert!(candidate
-            .decrypt(&tampered_nonce, AAD, &ciphertext)
-            .is_err());
     }
 }
 
@@ -321,46 +406,43 @@ fn wrong_key_nonce_or_aad_is_rejected() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x5749_4e44_5752_4f4e);
     for _ in 0..256 {
         let mut key = [0_u8; 32];
-        let mut nonce = [0_u8; NONCE_SIZE];
         let mut plaintext = vec![0_u8; 1 + (rng.next_u32() as usize % 200)];
         let mut aad = vec![0_u8; rng.next_u32() as usize % 64];
         rng.fill_bytes(&mut key);
-        rng.fill_bytes(&mut nonce);
         rng.fill_bytes(&mut plaintext);
         rng.fill_bytes(&mut aad);
 
-        let cipher = HardwareAes256GcmSiv::new(&key).unwrap();
-        let ct = cipher.encrypt(&nonce, &aad, &plaintext).unwrap();
+        let mut cipher = HardwareAes256GcmSiv::new(&key).unwrap();
+        let envelope = cipher.encrypt(&aad, &plaintext).unwrap();
 
         let mut wrong_key = key;
         wrong_key[rng.next_u32() as usize % 32] ^= 1;
         let wrong = HardwareAes256GcmSiv::new(&wrong_key).unwrap();
-        assert_eq!(wrong.decrypt(&nonce, &aad, &ct), Err(Error::Decrypt));
+        assert_eq!(wrong.decrypt(&aad, &envelope), Err(Error::Decrypt));
 
-        let mut wrong_nonce = nonce;
-        wrong_nonce[rng.next_u32() as usize % NONCE_SIZE] ^= 1;
-        assert_eq!(cipher.decrypt(&wrong_nonce, &aad, &ct), Err(Error::Decrypt));
+        let mut wrong_nonce = envelope.clone();
+        let nonce_pos = wrong_nonce.len() - NONCE_SIZE + (rng.next_u32() as usize % NONCE_SIZE);
+        wrong_nonce[nonce_pos] ^= 1;
+        assert_eq!(cipher.decrypt(&aad, &wrong_nonce), Err(Error::Decrypt));
 
         let mut wrong_aad = aad.clone();
-        wrong_aad.push(0xff); // changing AAD length must also fail
-        assert_eq!(cipher.decrypt(&nonce, &wrong_aad, &ct), Err(Error::Decrypt));
+        wrong_aad.push(0xff);
+        assert_eq!(cipher.decrypt(&wrong_aad, &envelope), Err(Error::Decrypt));
 
-        // The correct triple still authenticates.
-        assert_eq!(cipher.decrypt(&nonce, &aad, &ct).unwrap(), plaintext);
+        assert_eq!(cipher.decrypt(&aad, &envelope).unwrap(), plaintext);
     }
 }
 
 #[test]
 fn decrypt_to_zeroizes_output_on_authentication_failure() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
     let plaintext = vec![0xab_u8; 200];
-    let mut ciphertext = candidate.encrypt(&NONCE, AAD, &plaintext).unwrap();
-    // Corrupt the tag so authentication fails after the buffer is written.
-    let last = ciphertext.len() - 1;
-    ciphertext[last] ^= 0x80;
+    let mut envelope = candidate.encrypt(AAD, &plaintext).unwrap();
+    let last_tag_byte = envelope.len() - NONCE_SIZE - 1;
+    envelope[last_tag_byte] ^= 0x80;
 
     let mut out = vec![0x11_u8; plaintext.len()];
-    let result = candidate.decrypt_to(&NONCE, AAD, &ciphertext, &mut out);
+    let result = candidate.decrypt_to(AAD, &envelope, &mut out);
     assert_eq!(result, Err(Error::Decrypt));
     assert!(
         out.iter().all(|&b| b == 0),
@@ -397,52 +479,26 @@ fn rejects_invalid_key_length() {
 }
 
 #[test]
-fn rejects_invalid_nonce_length() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
-    assert_eq!(
-        candidate.encrypt(&[0_u8; 11], AAD, PLAINTEXT).err(),
-        Some(Error::InvalidNonceLength)
-    );
-    assert_eq!(
-        candidate.encrypt(&[0_u8; 13], AAD, PLAINTEXT).err(),
-        Some(Error::InvalidNonceLength)
-    );
-    let ct = candidate.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
-    assert_eq!(
-        candidate.decrypt(&[0_u8; 13], AAD, &ct).err(),
-        Some(Error::InvalidNonceLength)
-    );
-}
-
-#[test]
 fn rejects_short_and_undersized_buffers() {
-    let candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
+    let mut candidate = HardwareAes256GcmSiv::new(&KEY).unwrap();
 
-    // Ciphertext shorter than the tag.
-    assert_eq!(
-        candidate.decrypt(&NONCE, AAD, &[0_u8; TAG_SIZE - 1]).err(),
-        Some(Error::Decrypt)
-    );
-    // Nonce-appended layout too short to hold tag + nonce.
     assert_eq!(
         candidate
-            .decrypt_nonce_appended(&[0_u8; TAG_SIZE + NONCE_SIZE - 1])
+            .decrypt(AAD, &[0_u8; TAG_SIZE + NONCE_SIZE - 1])
             .err(),
         Some(Error::CiphertextTooShort)
     );
 
-    // encrypt_to / decrypt_to with undersized output buffers.
-    let mut too_small = vec![0_u8; PLAINTEXT.len() + TAG_SIZE - 1];
+    let mut too_small = vec![0_u8; PLAINTEXT.len() + TAG_SIZE + NONCE_SIZE - 1];
     assert_eq!(
-        candidate
-            .encrypt_to(&NONCE, AAD, PLAINTEXT, &mut too_small)
-            .err(),
+        candidate.encrypt_to(AAD, PLAINTEXT, &mut too_small).err(),
         Some(Error::OutputTooSmall)
     );
-    let ct = candidate.encrypt(&NONCE, AAD, PLAINTEXT).unwrap();
+
+    let envelope = candidate.encrypt(AAD, PLAINTEXT).unwrap();
     let mut small_pt = vec![0_u8; PLAINTEXT.len() - 1];
     assert_eq!(
-        candidate.decrypt_to(&NONCE, AAD, &ct, &mut small_pt).err(),
+        candidate.decrypt_to(AAD, &envelope, &mut small_pt).err(),
         Some(Error::OutputTooSmall)
     );
 }
@@ -463,28 +519,30 @@ fn randomized_differential_against_rustcrypto() {
             0_usize, 1, 2, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 255, 256,
         ] {
             let mut key = [0_u8; 32];
-            let mut nonce = [0_u8; NONCE_SIZE];
+            let mut inbound_nonce = [0_u8; NONCE_SIZE];
             let mut plaintext = vec![0_u8; plaintext_len];
             let mut aad = vec![0_u8; aad_len];
             rng.fill_bytes(&mut key);
-            rng.fill_bytes(&mut nonce);
+            rng.fill_bytes(&mut inbound_nonce);
             rng.fill_bytes(&mut plaintext);
             rng.fill_bytes(&mut aad);
 
-            let candidate = HardwareAes256GcmSiv::new(&key).unwrap();
-            let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
-            assert_eq!(
-                candidate_ct,
-                reference_encrypt(&key, &nonce, &aad, &plaintext),
-                "ciphertext mismatch at plaintext_len={plaintext_len} aad_len={aad_len}"
+            let mut candidate = HardwareAes256GcmSiv::new(&key).unwrap();
+            let envelope = candidate.encrypt(&aad, &plaintext).unwrap();
+            assert_default_envelope_matches_reference(
+                &key,
+                &aad,
+                &plaintext,
+                &envelope,
+                &format!("plaintext_len={plaintext_len} aad_len={aad_len}"),
             );
+            assert_eq!(candidate.decrypt(&aad, &envelope).unwrap(), plaintext);
+
+            let inbound_ct = reference_encrypt(&key, &inbound_nonce, &aad, &plaintext);
             assert_eq!(
-                candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(),
-                plaintext
-            );
-            // Cross-decrypt: reference opens our ciphertext.
-            assert_eq!(
-                reference_decrypt(&key, &nonce, &aad, &candidate_ct).unwrap(),
+                candidate
+                    .decrypt(&aad, &envelope_from_parts(&inbound_ct, &inbound_nonce))
+                    .unwrap(),
                 plaintext
             );
         }
@@ -500,35 +558,38 @@ fn dense_plaintext_sweep() {
     for plaintext_len in lengths {
         for aad_len in [0_usize, 17] {
             let mut key = [0_u8; 32];
-            let mut nonce = [0_u8; NONCE_SIZE];
             let mut plaintext = vec![0_u8; plaintext_len];
             let mut aad = vec![0_u8; aad_len];
             rng.fill_bytes(&mut key);
-            rng.fill_bytes(&mut nonce);
             rng.fill_bytes(&mut plaintext);
             rng.fill_bytes(&mut aad);
 
-            let candidate = HardwareAes256GcmSiv::new(&key).unwrap();
-            let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
-            assert_eq!(
-                candidate_ct,
-                reference_encrypt(&key, &nonce, &aad, &plaintext),
-                "ciphertext mismatch at plaintext_len={plaintext_len} aad_len={aad_len}"
+            let mut candidate = HardwareAes256GcmSiv::new(&key).unwrap();
+            let envelope = candidate.encrypt(&aad, &plaintext).unwrap();
+            assert_default_envelope_matches_reference(
+                &key,
+                &aad,
+                &plaintext,
+                &envelope,
+                &format!("alloc plaintext_len={plaintext_len} aad_len={aad_len}"),
             );
 
-            let mut to_buffer = vec![0_u8; plaintext_len + TAG_SIZE];
+            let mut to_buffer = vec![0_u8; plaintext_len + TAG_SIZE + NONCE_SIZE];
             let written = candidate
-                .encrypt_to(&nonce, &aad, &plaintext, &mut to_buffer)
+                .encrypt_to(&aad, &plaintext, &mut to_buffer)
                 .unwrap();
             assert_eq!(written, to_buffer.len());
-            assert_eq!(
-                to_buffer, candidate_ct,
-                "encrypt_to mismatch at {plaintext_len}"
+            assert_default_envelope_matches_reference(
+                &key,
+                &aad,
+                &plaintext,
+                &to_buffer,
+                &format!("encrypt_to plaintext_len={plaintext_len} aad_len={aad_len}"),
             );
 
             let mut pt_buffer = vec![0_u8; plaintext_len];
             let pt_written = candidate
-                .decrypt_to(&nonce, &aad, &candidate_ct, &mut pt_buffer)
+                .decrypt_to(&aad, &to_buffer, &mut pt_buffer)
                 .unwrap();
             assert_eq!(pt_written, plaintext_len);
             assert_eq!(
@@ -540,33 +601,29 @@ fn dense_plaintext_sweep() {
 }
 
 /// Dense AAD sweep across the same POLYVAL aggregation boundaries the plaintext
-/// path exercises - AAD runs through the identical 8/4/1-block + partial logic
-/// and previously was only checked at lengths {0, 17}.
+/// path exercises. AAD runs through the identical 8/4/1-block + partial logic.
 #[test]
 fn dense_aad_sweep() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x5349_565f_4141_4453);
     for aad_len in 0..=288_usize {
         for plaintext_len in [0_usize, 16, 37] {
             let mut key = [0_u8; 32];
-            let mut nonce = [0_u8; NONCE_SIZE];
             let mut plaintext = vec![0_u8; plaintext_len];
             let mut aad = vec![0_u8; aad_len];
             rng.fill_bytes(&mut key);
-            rng.fill_bytes(&mut nonce);
             rng.fill_bytes(&mut plaintext);
             rng.fill_bytes(&mut aad);
 
-            let candidate = HardwareAes256GcmSiv::new(&key).unwrap();
-            let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
-            assert_eq!(
-                candidate_ct,
-                reference_encrypt(&key, &nonce, &aad, &plaintext),
-                "ciphertext mismatch at aad_len={aad_len} plaintext_len={plaintext_len}"
+            let mut candidate = HardwareAes256GcmSiv::new(&key).unwrap();
+            let envelope = candidate.encrypt(&aad, &plaintext).unwrap();
+            assert_default_envelope_matches_reference(
+                &key,
+                &aad,
+                &plaintext,
+                &envelope,
+                &format!("aad_len={aad_len} plaintext_len={plaintext_len}"),
             );
-            assert_eq!(
-                candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(),
-                plaintext
-            );
+            assert_eq!(candidate.decrypt(&aad, &envelope).unwrap(), plaintext);
         }
     }
 }
@@ -576,24 +633,16 @@ fn dense_aad_sweep() {
 fn large_aad_and_plaintext() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x4c52_4745_5f49_4f4e);
     let mut key = [0_u8; 32];
-    let mut nonce = [0_u8; NONCE_SIZE];
     let mut plaintext = vec![0_u8; 9000];
     let mut aad = vec![0_u8; 5000];
     rng.fill_bytes(&mut key);
-    rng.fill_bytes(&mut nonce);
     rng.fill_bytes(&mut plaintext);
     rng.fill_bytes(&mut aad);
 
-    let candidate = HardwareAes256GcmSiv::new(&key).unwrap();
-    let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
-    assert_eq!(
-        candidate_ct,
-        reference_encrypt(&key, &nonce, &aad, &plaintext)
-    );
-    assert_eq!(
-        candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(),
-        plaintext
-    );
+    let mut candidate = HardwareAes256GcmSiv::new(&key).unwrap();
+    let envelope = candidate.encrypt(&aad, &plaintext).unwrap();
+    assert_default_envelope_matches_reference(&key, &aad, &plaintext, &envelope, "large input");
+    assert_eq!(candidate.decrypt(&aad, &envelope).unwrap(), plaintext);
 }
 
 // ---------------------------------------------------------------------------

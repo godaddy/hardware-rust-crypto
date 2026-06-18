@@ -14,13 +14,16 @@
 //!   caller-provided memory so the caller controls where keys and key-equivalent
 //!   state live (use [`aes_gcm::HardwareAes256Gcm::key_state_layout`] to size
 //!   and align the storage, [`aes_gcm::UninitKeyStateSlot`] to hand it over).
-//!   All zeroize the key state on drop. The same module also provides
+//!   Default encryption generates a nonce and returns `ciphertext || tag ||
+//!   nonce`; default decryption parses the nonce from that envelope. All
+//!   handles zeroize key state on drop. The same module also provides
 //!   nonce-misuse-resistant AES-256-GCM-SIV (RFC 8452) through the parallel
 //!   [`aes_gcm::HardwareAes256GcmSiv`],
 //!   [`aes_gcm::HardwareAes256GcmSivKeyState`], and
 //!   [`aes_gcm::HardwareAes256GcmSivIn`] types (placed via
 //!   [`aes_gcm::SivUninitKeyStateSlot`]), built on the same hardware AES and
-//!   carryless-multiply backends with POLYVAL authentication.
+//!   carryless-multiply backends with POLYVAL authentication and the same
+//!   default envelope API.
 //! - [`random`]: a hardware AES-256-CTR key and nonce generator
 //!   ([`random::AesCtrKeyGenerator`]) with fork detection and CPU hardware-RNG
 //!   (`RDSEED`/`RNDRRS`) reseeding.

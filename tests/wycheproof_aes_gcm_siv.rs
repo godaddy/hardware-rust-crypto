@@ -59,16 +59,18 @@ fn wycheproof_aes_256_gcm_siv() {
                 .map(|f| f.as_str().unwrap())
                 .collect();
 
-            // The crate's wire format is ciphertext || tag.
+            // The crate's wire format is ciphertext || tag || nonce.
             let mut ct_and_tag = ct.clone();
             ct_and_tag.extend_from_slice(&tag);
+            let mut envelope = ct_and_tag.clone();
+            envelope.extend_from_slice(&iv);
 
             assert_eq!(
                 iv.len(),
                 NONCE_SIZE,
                 "tcId {tc_id}: unexpected nonce length"
             );
-            let cipher = HardwareAes256GcmSiv::new(&key).unwrap();
+            let mut cipher = HardwareAes256GcmSiv::new(&key).unwrap();
 
             total += 1;
             let is_wrap = flags.contains(&"WrappedIv");
@@ -79,24 +81,26 @@ fn wycheproof_aes_256_gcm_siv() {
             match result {
                 "valid" => {
                     valid += 1;
-                    // Encryption must produce exactly ciphertext || tag.
-                    let produced = cipher.encrypt(&iv, &aad, &msg).unwrap();
-                    assert_eq!(
-                        produced, ct_and_tag,
-                        "tcId {tc_id} ({flags:?}): encryption mismatch"
-                    );
-                    // Decryption must recover the plaintext.
-                    let recovered = cipher.decrypt(&iv, &aad, &ct_and_tag).unwrap();
+                    // Decryption must recover the plaintext from the vector
+                    // framed in the crate's default envelope layout.
+                    let recovered = cipher.decrypt(&aad, &envelope).unwrap();
                     assert_eq!(
                         recovered, msg,
                         "tcId {tc_id} ({flags:?}): decryption mismatch"
+                    );
+
+                    let produced = cipher.encrypt(&aad, &msg).unwrap();
+                    assert_eq!(
+                        cipher.decrypt(&aad, &produced).unwrap(),
+                        msg,
+                        "tcId {tc_id} ({flags:?}): generated-envelope round trip mismatch"
                     );
                 }
                 "invalid" => {
                     invalid += 1;
                     // Modified tag / ciphertext must be rejected.
                     assert!(
-                        cipher.decrypt(&iv, &aad, &ct_and_tag).is_err(),
+                        cipher.decrypt(&aad, &envelope).is_err(),
                         "tcId {tc_id} ({flags:?}): invalid vector authenticated"
                     );
                 }
