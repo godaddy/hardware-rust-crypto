@@ -77,7 +77,7 @@ jobs:
       # Exercise the explicit-nonce entry points and the byte-exact encrypt
       # known-answer checks gated behind them.
       - name: Hazmat explicit-nonce tests
-        run: cargo test --features hazmat-explicit-nonce --test nist_cavp_gcm --test aes_gcm_interop --test aes_gcm_siv_interop
+        run: cargo test --features hazmat-explicit-nonce --test nist_cavp_gcm --test aes_gcm_interop --test aes_gcm_siv_interop --test openssl_interop
 
       - name: Docs
         run: cargo doc --workspace --no-deps

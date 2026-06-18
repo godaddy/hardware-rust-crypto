@@ -49,7 +49,9 @@ The AES-256-GCM composition logic (J0 construction, CTR keystream application,
 length-block authentication, and tag handling) in
 src/aes_gcm/mod.rs is implemented from NIST SP 800-38D and the
 RustCrypto `aes-gcm` crate's design, and is validated byte-for-byte against
-RustCrypto `aes-gcm` 0.10 and `ring` 0.17 by the interoperability test suite.
+three lineage-independent implementations - RustCrypto `aes-gcm` 0.10, `ring`
+0.17, and OpenSSL 3.x (via the dev-only `openssl` crate; not part of the
+published library or its dependency graph) - by the interoperability test suite.
 
 The AES-256-GCM-SIV composition (src/aes_gcm/siv.rs) is implemented from
 RFC 8452 and the RustCrypto `aes-gcm-siv` crate's design, and is validated
