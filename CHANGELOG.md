@@ -65,6 +65,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   both RustCrypto (pure Rust) and `ring` (BoringSSL heritage), so agreement
   across all three rules out a shared specification-level bug. OpenSSL is a
   vendored-build dev-dependency, never in the production dependency graph.
+- **SAW field-multiply bilinearity (target, tool-blocked)** (`proofs/saw/field_bilinearity.saw`): residual harnesses (`saw_field_mul_*`, `saw-verify`
+  feature) encode a SAW proof that the compiled PCLMULQDQ field multiply is
+  GF(2)-bilinear and commutative - reaching *through* the intrinsic. Currently
+  blocked by SAW 1.5 panicking on the LLVM `poison` values rustc emits for the
+  128-bit SIMD lowering (every opt level); documented in `proofs/saw/README.md`.
+  Bilinearity is already proven for all inputs by `prove_multiply.py`.
 - **SAW proofs over the compiled LLVM bitcode** (`proofs/saw/`): SAW (Galois)
   verifies rustc's LLVM bitcode for `increment_counter` and `j0` against a Cryptol
   spec (SP 800-38D `inc_32` and `J0 = IV‖0³¹‖1`) — a third independent
