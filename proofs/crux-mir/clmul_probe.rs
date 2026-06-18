@@ -20,18 +20,43 @@
 #[macro_use]
 extern crate crucible;
 
+// Carryless multiply is GF(2)-linear in its first argument. crux-mir cannot
+// evaluate the carryless-multiply intrinsic, so these goals are reported Invalid
+// (unmodeled intrinsic), NOT because the maths is wrong. One arm per supported
+// architecture so the probe exercises the real intrinsic on whatever runner runs
+// it (PMULL on aarch64, PCLMULQDQ on x86_64) rather than discharging vacuously.
+
 #[cfg(all(crux, target_arch = "aarch64"))]
 #[crux::test]
-fn clmul_is_left_linear() {
+fn clmul_is_left_linear_aarch64() {
     use core::arch::aarch64::vmull_p64;
     use crucible::Symbolic;
     let a = u64::symbolic("a");
     let a2 = u64::symbolic("a2");
     let b = u64::symbolic("b");
-    // Carryless multiply is GF(2)-linear in its first argument. crux-mir cannot
-    // evaluate vmull_p64, so this goal is reported Invalid (unmodeled intrinsic),
-    // NOT because the maths is wrong.
     let lhs: u128 = unsafe { vmull_p64(a ^ a2, b) };
     let rhs: u128 = unsafe { vmull_p64(a, b) ^ vmull_p64(a2, b) };
     crucible_assert!(lhs == rhs);
+}
+
+#[cfg(all(crux, target_arch = "x86_64"))]
+#[crux::test]
+fn clmul_is_left_linear_x86_64() {
+    use core::arch::x86_64::{_mm_clmulepi64_si128, _mm_set_epi64x};
+    use crucible::Symbolic;
+    let a = u64::symbolic("a");
+    let a2 = u64::symbolic("a2");
+    let b = u64::symbolic("b");
+    // PCLMULQDQ of the low 64-bit lanes (imm 0x00), the same primitive the GHASH
+    // backend uses; reached here so the x86_64 CI runner hits the real intrinsic.
+    unsafe {
+        let bv = _mm_set_epi64x(0, b as i64);
+        let lhs: u128 =
+            core::mem::transmute(_mm_clmulepi64_si128(_mm_set_epi64x(0, (a ^ a2) as i64), bv, 0x00));
+        let r1: u128 =
+            core::mem::transmute(_mm_clmulepi64_si128(_mm_set_epi64x(0, a as i64), bv, 0x00));
+        let r2: u128 =
+            core::mem::transmute(_mm_clmulepi64_si128(_mm_set_epi64x(0, a2 as i64), bv, 0x00));
+        crucible_assert!(lhs == r1 ^ r2);
+    }
 }
