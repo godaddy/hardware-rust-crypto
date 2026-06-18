@@ -50,3 +50,23 @@ length-block authentication, and tag handling) in
 src/aes_gcm/mod.rs is implemented from NIST SP 800-38D and the
 RustCrypto `aes-gcm` crate's design, and is validated byte-for-byte against
 RustCrypto `aes-gcm` 0.10 and `ring` 0.17 by the interoperability test suite.
+
+The AES-256-GCM-SIV composition (src/aes_gcm/siv.rs) is implemented from
+RFC 8452 and the RustCrypto `aes-gcm-siv` crate's design, and is validated
+against the RFC 8452 known-answer vectors and RustCrypto `aes-gcm-siv` 0.11.
+
+--------------------------------------------------------------------------------
+
+Vendored test data (not compiled into the library):
+
+4. Project Wycheproof AES-GCM-SIV test vectors
+   - Repository: https://github.com/C2SP/wycheproof
+   - Version: 0.9rc5 (testvectors_v1/aes_gcm_siv_test.json)
+   - Copyright: Google LLC and Project Wycheproof contributors
+   - License: Apache-2.0
+   - Vendored verbatim as test data (downloaded, not transcribed):
+     tests/data/wycheproof_aes_gcm_siv.json
+   - Used only by the test suite (tests/wycheproof_aes_gcm_siv.rs) to
+     cross-validate the AES-256-GCM-SIV path, including counter-wrap and
+     tag-rejection vectors. Not part of the published library or its
+     dependency graph.
