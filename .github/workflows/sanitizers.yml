@@ -1,0 +1,44 @@
+name: Sanitizers (ASan/TSan)
+
+# AddressSanitizer + ThreadSanitizer over the intrinsic binary. Runs on every
+# push/PR and is individually runnable. The full-suite + MemorySanitizer variant
+# lives in heavy-assurance.yml.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sanitizers:
+    name: ${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly + rust-src
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly
+          components: rust-src
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # ASan catches heap/stack memory errors in the intrinsic binary; TSan
+      # validates the `unsafe impl Send/Sync` and the cross-thread key-state
+      # sharing claim.
+      - name: Test under ${{ matrix.sanitizer }} sanitizer
+        run: >
+          cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu
+          --lib --test aes_gcm_interop --test aes_gcm_siv_interop
+        env:
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+          RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}

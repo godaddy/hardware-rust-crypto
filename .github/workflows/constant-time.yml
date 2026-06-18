@@ -1,0 +1,44 @@
+name: Constant-time
+
+# Binary-level branch-freedom (asm-verified) plus dudect Welch t-tests. Runs on
+# every push/PR and is individually runnable from the Actions tab.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: constant-time-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  constant-time:
+    name: constant-time (asm-verified + dudect, gated)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Assert crypto hardware is available
+        run: cargo run --release --example assert_hardware
+      # Binary-level constant-time check: disassemble the two scalar
+      # secret-handling functions (the tag comparison and the GHASH mulX carry
+      # fold) and require them to be branch-free over their secret inputs - a
+      # checkable property of the shipped machine code, not a statistic. Includes
+      # a non-vacuity control (a deliberately leaky comparison that must be
+      # rejected). See proofs/constant-time/verify.sh and HRC-2026-05.
+      - name: Binary-level branch-freedom verification
+        run: ./proofs/constant-time/verify.sh
+      # dudect Welch t-test on both decrypt paths (GCM and SIV): tag-mismatch
+      # position and ciphertext-content independence. Each test is best-of-3
+      # batches and fails if |t| stays >= 25 (a real early-exit leak holds |t| in
+      # the hundreds across every batch; constant-time code passes the first).
+      # See docs/constant-time.md and HRC-2026-05.
+      - name: dudect timing tests (release)
+        run: cargo test --release --test timing_constant_time --test timing_constant_time_siv -- --ignored --nocapture
