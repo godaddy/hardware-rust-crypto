@@ -1,0 +1,47 @@
+// SAW proof target: the GHASH/POLYVAL field multiply is GF(2)-bilinear and
+// commutative, over the *compiled* PCLMULQDQ code - reaching THROUGH the
+// hardware carryless-multiply intrinsic. Bilinearity is the property the
+// basis-determination proof (prove_multiply.py) relies on; verifying it here
+// would corroborate that argument at the compiled-intrinsic level.
+//
+// STATUS: blocked by a SAW 1.5 limitation, not by the maths or the setup. SAW's
+// crucible-llvm backend panics ("Attempting to evaluate poison value") on the
+// LLVM `poison` values that rustc emits when lowering the 128-bit SIMD
+// carryless-multiply intrinsics - at every optimization level (-O0..-O3) and
+// with `enable_experimental`. The intrinsic-free composition (composition.saw)
+// verifies fine; this script is the ready target for when SAW handles poison
+// (or via a crux-mir path with carryless-multiply models). The harnesses it
+// drives are `saw_field_mul_{left,right}_linear` / `saw_field_mul_commutes`,
+// emitted under the build-time `saw-verify` feature.
+//
+// Build the x86_64 bitcode (PCLMULQDQ path) with, e.g.:
+//   RUSTFLAGS="--emit=llvm-bc -C codegen-units=1 -C target-feature=+pclmulqdq" \
+//     cargo build --release --target x86_64-unknown-linux-gnu --features saw-verify --lib
+// then substitute BITCODE_PATH below.
+
+m <- llvm_load_module "BITCODE_PATH";
+let arr = llvm_array 16 (llvm_int 8);
+
+// Each harness computes a residual that is identically zero iff the property
+// holds; SAW must prove the output is `zero` for all symbolic inputs.
+let residual3 = do {
+  ap <- llvm_alloc_readonly arr; bp <- llvm_alloc_readonly arr; cp <- llvm_alloc_readonly arr;
+  outp <- llvm_alloc arr;
+  a <- llvm_fresh_var "a" arr; b <- llvm_fresh_var "b" arr; c <- llvm_fresh_var "c" arr;
+  llvm_points_to ap (llvm_term a); llvm_points_to bp (llvm_term b); llvm_points_to cp (llvm_term c);
+  llvm_execute_func [ap, bp, cp, outp];
+  llvm_points_to outp (llvm_term {{ zero : [16][8] }});
+};
+let residual2 = do {
+  ap <- llvm_alloc_readonly arr; bp <- llvm_alloc_readonly arr;
+  outp <- llvm_alloc arr;
+  a <- llvm_fresh_var "a" arr; b <- llvm_fresh_var "b" arr;
+  llvm_points_to ap (llvm_term a); llvm_points_to bp (llvm_term b);
+  llvm_execute_func [ap, bp, outp];
+  llvm_points_to outp (llvm_term {{ zero : [16][8] }});
+};
+
+llvm_verify m "saw_field_mul_left_linear"  [] true residual3 z3;
+llvm_verify m "saw_field_mul_right_linear" [] true residual3 z3;
+llvm_verify m "saw_field_mul_commutes"     [] true residual2 z3;
+print "SAW: field multiply is GF(2)-bilinear and commutative (compiled PCLMULQDQ)";

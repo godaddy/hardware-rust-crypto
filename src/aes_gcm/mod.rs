@@ -33,6 +33,13 @@ mod siv;
 #[cfg(feature = "ct-verify")]
 pub use ghash::{ct_verify_leaky_control, ct_verify_mulx};
 
+/// Re-exported only under `saw-verify` so SAW can reach the field-multiply
+/// wrappers as public symbols; not part of the shipped API.
+#[cfg(feature = "saw-verify")]
+pub use ghash::{
+    saw_field_mul, saw_field_mul_commutes, saw_field_mul_left_linear, saw_field_mul_right_linear,
+};
+
 pub use siv::{
     HardwareAes256GcmSiv, HardwareAes256GcmSivIn, HardwareAes256GcmSivKeyState,
     SivUninitKeyStateSlot,

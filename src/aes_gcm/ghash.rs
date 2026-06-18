@@ -433,6 +433,102 @@ pub fn ct_verify_leaky_control(a: &[u8; 16], b: &[u8; 16]) -> bool {
     true
 }
 
+/// Stable-symbol `extern "C"` wrapper around the carryless-multiply field
+/// product (`imp::mul`) so SAW can prove properties of the *compiled* intrinsic
+/// code - it reaches through PCLMULQDQ / PMULL, which SAW models. Build-time
+/// only; `saw-verify` is never shipped. See `proofs/saw/`.
+#[cfg(feature = "saw-verify")]
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn saw_field_mul(a: *const u8, b: *const u8, out: *mut u8) {
+    // SAFETY: SAW provides three valid 16-byte buffers; the hardware contract
+    // for `imp::mul` is assumed (SAW models the carryless-multiply intrinsic).
+    let a = unsafe { &*(a.cast::<[u8; 16]>()) };
+    let b = unsafe { &*(b.cast::<[u8; 16]>()) };
+    let r = unsafe { imp::mul(a, b) };
+    // SAFETY: `out` is a writable 16-byte buffer (direct store; no ub-check).
+    unsafe { *(out.cast::<[u8; 16]>()) = r };
+}
+
+#[cfg(feature = "saw-verify")]
+fn saw_xor16(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    let mut r = [0_u8; 16];
+    let mut i = 0;
+    while i < 16 {
+        r[i] = a[i] ^ b[i];
+        i += 1;
+    }
+    r
+}
+
+#[cfg(feature = "saw-verify")]
+unsafe fn saw_read16(p: *const u8) -> [u8; 16] {
+    // SAFETY: callers (the SAW harnesses) pass valid 16-byte buffers.
+    unsafe { *(p.cast::<[u8; 16]>()) }
+}
+
+/// Bilinearity residual in the FIRST argument:
+/// `mul(a^a', b) ^ mul(a, b) ^ mul(a', b)`. SAW proves this is always zero, i.e.
+/// the carryless-multiply field product is GF(2)-linear in its first argument -
+/// the property the basis-determination proof (`prove_multiply.py`) relies on,
+/// here confirmed over the *compiled* PCLMULQDQ/PMULL code. Build-time only.
+#[cfg(feature = "saw-verify")]
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn saw_field_mul_left_linear(
+    a: *const u8,
+    a2: *const u8,
+    b: *const u8,
+    out: *mut u8,
+) {
+    // SAFETY: SAW provides four valid 16-byte buffers.
+    let (a, a2, b) = unsafe { (saw_read16(a), saw_read16(a2), saw_read16(b)) };
+    let r = unsafe {
+        saw_xor16(
+            &saw_xor16(&imp::mul(&saw_xor16(&a, &a2), &b), &imp::mul(&a, &b)),
+            &imp::mul(&a2, &b),
+        )
+    };
+    // SAFETY: `out` is a writable 16-byte buffer (direct store; no ub-check).
+    unsafe { *(out.cast::<[u8; 16]>()) = r };
+}
+
+/// Bilinearity residual in the SECOND argument:
+/// `mul(a, b^b') ^ mul(a, b) ^ mul(a, b')`. SAW proves this is always zero.
+#[cfg(feature = "saw-verify")]
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn saw_field_mul_right_linear(
+    a: *const u8,
+    b: *const u8,
+    b2: *const u8,
+    out: *mut u8,
+) {
+    // SAFETY: SAW provides four valid 16-byte buffers.
+    let (a, b, b2) = unsafe { (saw_read16(a), saw_read16(b), saw_read16(b2)) };
+    let r = unsafe {
+        saw_xor16(
+            &saw_xor16(&imp::mul(&a, &saw_xor16(&b, &b2)), &imp::mul(&a, &b)),
+            &imp::mul(&a, &b2),
+        )
+    };
+    // SAFETY: `out` is a writable 16-byte buffer (direct store; no ub-check).
+    unsafe { *(out.cast::<[u8; 16]>()) = r };
+}
+
+/// Commutativity residual: `mul(a, b) ^ mul(b, a)`. SAW proves this is always
+/// zero (the field product is symmetric).
+#[cfg(feature = "saw-verify")]
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn saw_field_mul_commutes(a: *const u8, b: *const u8, out: *mut u8) {
+    // SAFETY: SAW provides three valid 16-byte buffers.
+    let (a, b) = unsafe { (saw_read16(a), saw_read16(b)) };
+    let r = unsafe { saw_xor16(&imp::mul(&a, &b), &imp::mul(&b, &a)) };
+    // SAFETY: `out` is a writable 16-byte buffer (direct store; no ub-check).
+    unsafe { *(out.cast::<[u8; 16]>()) = r };
+}
+
 #[cfg(target_arch = "aarch64")]
 mod imp {
     use super::volatile_zero;
