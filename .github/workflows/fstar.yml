@@ -1,0 +1,82 @@
+name: F* / hax extraction proof
+
+# Extracts the AES-256-GCM/SIV composition from the real Rust source to F* with
+# hax (Cryspen), then verifies HrcComposition.fst with F* - a source-level
+# functional-correctness proof of j0 / increment_counter. A drift guard re-runs
+# the extraction and fails if the proved bodies no longer match the shipped code.
+#
+# Manual-only and the heaviest bring-up here: it builds the hax toolchain (Rust +
+# OCaml engines), F*, and Z3 from scratch. See proofs/hax/README.md,
+# proofs/hax/extract.sh and proofs/fstar/check.sh.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fstar:
+    name: F* proof over hax-extracted composition
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # hax's frontend links against the compiler internals of its pinned nightly.
+      - name: Install hax's pinned nightly (nightly-2025-11-08)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly-2025-11-08
+          components: rustc-dev, llvm-tools-preview, rust-src, rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # OCaml/opam toolchain for the hax OCaml engine and for F*.
+      - name: Set up OCaml + opam
+        uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3
+        with:
+          ocaml-compiler: "5.2"
+      - name: Install Node (hax engine codegen)
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4
+        with:
+          node-version: "20"
+
+      # Z3 4.13.3 on PATH (F*'s solver), exposed under both names check.sh/F* use.
+      - name: Install Z3 4.13.3
+        run: |
+          set -euo pipefail
+          curl -fsSL -o z3.zip \
+            https://github.com/Z3Prover/z3/releases/download/z3-4.13.3/z3-4.13.3-x64-glibc-2.35.zip
+          unzip -q z3.zip -d "$HOME/z3"
+          d=$(ls -d "$HOME"/z3/z3-* | head -1)
+          ln -sf "$d/bin/z3" "$d/bin/z3-4.13.3"
+          echo "$d/bin" >> "$GITHUB_PATH"
+      - run: z3 --version
+
+      # Build the hax frontend + drivers against the pinned nightly. The git
+      # install lands a checkout under ~/.cargo/git/checkouts/hax-*/ which carries
+      # the driver, rust-engine and engine/ sources extract.sh/check.sh reference.
+      - name: Build hax (frontend + Rust engine + codegen)
+        run: |
+          set -euo pipefail
+          cargo install --git https://github.com/hacspec/hax cargo-hax
+          HAX=$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)
+          echo "HAX=$HAX" >> "$GITHUB_ENV"
+          cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"
+          cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"
+          cargo +nightly-2025-11-08 install --path "$HAX/engine/names/extract"
+
+      - name: Build the hax OCaml engine and install F*
+        run: |
+          set -euo pipefail
+          eval "$(opam env)"
+          opam install -y fstar
+          (cd "$HAX/engine" && opam install . -y --confirm-level=unsafe-yes --assume-depexts)
+
+      # Re-extracts with hax, drift-checks the proved bodies against the fresh
+      # extraction, then runs F* on HrcComposition.fst (non-zero on any unproved
+      # obligation).
+      - name: Verify the F* proof (with drift guard)
+        run: |
+          set -euo pipefail
+          eval "$(opam env)"
+          ./proofs/fstar/check.sh

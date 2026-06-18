@@ -1,0 +1,81 @@
+name: crux-mir (Rust MIR proof)
+
+# crux-mir (Galois) symbolically executes the Rust MIR and proves
+# increment_counter == SP 800-38D inc_32 - a fourth independent toolchain
+# alongside Z3, Kani/CBMC and SAW-LLVM, at the MIR level (no LLVM poison).
+# clmul_probe.rs additionally establishes the intrinsic boundary (vmull_p64
+# unmodeled), mirroring SAW-LLVM. See proofs/crux-mir/README.md and run.sh.
+#
+# Manual-only: brings up the mir-json + crux-mir toolchain (schema-8 mir-json to
+# match the SAW bundle's crux-mir-comp), which is heavy to install.
+on:
+  workflow_dispatch:
+    inputs:
+      saw_version:
+        description: "SAW release version (provides crux-mir-comp)"
+        default: "1.5.1"
+
+permissions:
+  contents: read
+
+jobs:
+  crux-mir:
+    name: crux-mir MIR proof (increment_counter)
+    runs-on: ubuntu-latest
+    env:
+      # mir-json is built for and must run under this exact nightly; forcing it
+      # globally makes the temp crates that run.sh builds use it too.
+      RUSTUP_TOOLCHAIN: nightly-2025-09-14
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # mir-json needs the compiler internals (rustc-dev) and rust-src of its
+      # pinned nightly.
+      - name: Install nightly-2025-09-14 (rustc-dev + rust-src)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly-2025-09-14
+          components: rustc-dev, rust-src, llvm-tools-preview
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # The verifier itself (crux-mir-comp) ships in the SAW release bundle.
+      # Symlink it to `crux-mir`, the name run.sh expects on PATH.
+      - name: Install crux-mir-comp from the SAW ${{ inputs.saw_version }} bundle
+        run: |
+          set -euo pipefail
+          ver="${{ inputs.saw_version }}"
+          url=$(curl -fsSL "https://api.github.com/repos/GaloisInc/saw-script/releases/tags/v${ver}" \
+            | grep -oE 'https://[^"]+with-solvers[^"]+\.tar\.gz' \
+            | grep -iE 'linux|ubuntu' | head -1)
+          [ -n "$url" ] || { echo "could not find a Linux with-solvers asset for v${ver}" >&2; exit 1; }
+          curl -fsSL -o saw.tar.gz "$url"
+          mkdir -p "$HOME/saw"
+          tar xzf saw.tar.gz -C "$HOME/saw" --strip-components=1
+          ln -sf "$HOME/saw/bin/crux-mir-comp" "$HOME/saw/bin/crux-mir"
+          echo "$HOME/saw/bin" >> "$GITHUB_PATH"
+
+      # mir-json (rustc -> MIR JSON) at the last schema-8 commit, which matches
+      # SAW 1.5.1's crux-mir-comp (newer mir-json emits schema 10/11, rejected).
+      - name: Build and install mir-json (schema-8 commit 48d0b4b2)
+        run: |
+          set -euo pipefail
+          git clone https://github.com/GaloisInc/mir-json "$HOME/mir-json"
+          cd "$HOME/mir-json"
+          git checkout 48d0b4b2
+          cargo install --path . --locked
+          # Translate the standard library to MIR JSON rlibs (run from the
+          # checkout, which carries the libs/ tree).
+          rm -rf rlibs
+          mir-json-translate-libs
+          echo "CRUX_RUST_LIBRARY_PATH=$HOME/mir-json/rlibs" >> "$GITHUB_ENV"
+
+      - name: crux-mir / mir-json versions
+        run: |
+          crux-mir --version || true
+          mir-json --version || true
+
+      # Builds a tiny crate around each proofs/crux-mir/*.rs and runs
+      # `cargo crux-test`. increment_counter.rs must prove Valid; clmul_probe.rs
+      # is expected Invalid (unmodeled vmull_p64) and does not fail the job.
+      - name: Run crux-mir proofs
+        run: ./proofs/crux-mir/run.sh

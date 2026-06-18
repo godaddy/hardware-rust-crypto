@@ -1,0 +1,51 @@
+name: Valgrind memcheck
+
+# Valgrind memchecks the real x86_64 AES-NI/PCLMULQDQ binaries (the hardware
+# path Miri cannot execute). Runs on every push/PR and is individually runnable.
+# The full-suite (every test binary) variant lives in heavy-assurance.yml.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: valgrind-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  valgrind:
+    name: valgrind memcheck (intrinsic binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      # Valgrind runs the real x86_64 binary including AES-NI/PCLMULQDQ - the
+      # hardware path Miri cannot execute - and memchecks the `unsafe` code for
+      # invalid/uninitialized memory access on the actual SIMD code generation.
+      - name: Build test binaries
+        run: cargo test --no-run --release --lib --test aes_gcm_interop --test aes_gcm_siv_interop
+      - name: memcheck the test binaries
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bin in \
+            target/release/deps/hardware_rust_crypto-* \
+            target/release/deps/aes_gcm_interop-* \
+            target/release/deps/aes_gcm_siv_interop-*; do
+            # Skip non-executables (.d files, etc.).
+            [ -x "$bin" ] && [ -f "$bin" ] || continue
+            case "$bin" in *.d) continue;; esac
+            echo "::group::valgrind $bin"
+            valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite \
+              --track-origins=yes "$bin" --test-threads=1
+            echo "::endgroup::"
+          done

@@ -1,0 +1,38 @@
+name: Kani model checking
+
+# CBMC-backed symbolic verification of the actual compiled Rust. Runs on every
+# push/PR and is individually runnable from the Actions tab ("Run workflow").
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kani-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kani:
+    name: kani model checking (parser + counters)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      # CBMC verifies the ACTUAL compiled Rust (not a model) of the intrinsic-free
+      # logic over all inputs (bounded where noted): the GCM/SIV counter increments
+      # == inc_32 / RFC 8452 LE32 increment, J0 layout, length validation, the
+      # nonce parser, and the two envelope splitters never panic and split at the
+      # correct boundary. See the cfg(kani) modules and docs/assurance.md.
+      - name: Run Kani proof harnesses
+        run: cargo kani
