@@ -75,6 +75,26 @@ after the constant-time comparison, so valid-vs-invalid timing may differ. That
 difference reveals only the authentication outcome, which is the public
 `Result`; it is not a channel about how much of the tag matched.
 
+### AES-256-GCM-SIV
+
+`tests/timing_constant_time_siv.rs` is the parallel harness for the SIV decrypt
+path, asserting the same two properties:
+
+```sh
+cargo test --release --test timing_constant_time_siv -- --ignored --nocapture
+```
+
+The mismatch-position check is slightly stronger for SIV: the stored tag is also
+the initial CTR counter, so the test additionally exercises the little-endian
+counter handling and the keystream pass being independent of which tag byte
+changed. Both modes settle far below the 25.0 threshold on a quiet box (Apple
+M4 Max, release); a representative run:
+
+| Property | GCM \|t\| | SIV \|t\| |
+| --- | --- | --- |
+| tag comparison vs. mismatch position | 1.59 | 0.15 |
+| decrypt vs. ciphertext content | 2.50 | 0.52 |
+
 ### Methodology notes (learned while building this)
 
 - **Crop, do not clamp, outliers.** Measurements above ~2 us are preemption

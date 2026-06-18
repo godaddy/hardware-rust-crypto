@@ -101,8 +101,11 @@ A single crate, `hardware-rust-crypto`, with two modules:
   otherwise (`cpu-rng-reseed` feature, default on).
 
 Interoperability tests against stock RustCrypto `aes-gcm`, `aes-gcm-siv`, and
-`ring` (including RFC 8452 known-answer vectors for the SIV path), Criterion
-benchmark harnesses, and CI on Linux x64 and macOS aarch64 round out the repo.
+`ring` (including RFC 8452 known-answer vectors and the Project Wycheproof
+AES-256-GCM-SIV suite - counter-wrap and tag-rejection vectors included - for
+the SIV path), dudect-style constant-time timing harnesses for both the GCM and
+SIV decrypt paths, Criterion benchmark harnesses, and CI on Linux x64 and macOS
+aarch64 round out the repo.
 
 The production dependency graph contains **no software cipher and no
 third-party crypto implementation**: only `getrandom`, `subtle`, and `zeroize`
@@ -253,6 +256,7 @@ cargo bench --bench random
 
 # Constant-time verification (manual; see docs/constant-time.md):
 cargo test --release --test timing_constant_time -- --ignored --nocapture
+cargo test --release --test timing_constant_time_siv -- --ignored --nocapture
 ```
 
 See [docs/design.md](docs/design.md) for the implementation plan.
