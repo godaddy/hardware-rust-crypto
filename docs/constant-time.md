@@ -7,6 +7,49 @@ timing is accepted as fundamental; the two properties we control (no
 secret-dependent control flow/indexing, and compiler non-interference) are
 verified here.
 
+## The constant-time argument, in full
+
+Three classes of operation touch secret-derived data, and each is data-oblivious:
+
+1. **AES rounds and the carryless multiply** run on AES-NI / PCLMULQDQ (x86) and
+   AESE/PMULL (aarch64), which the CPU vendors specify as data-independent in
+   latency. This is the same trust boundary `ring` and RustCrypto rely on, and it
+   is the only *axiom* in the argument.
+2. **The CTR keystream application and the GHASH absorption** are byte XOR and
+   copies at fixed strides - oblivious by construction.
+3. **The only scalar operations on secret data** are the tag comparison
+   (`constant_time_eq`) and the GHASH `mulX` carry fold (`mulx`).
+
+So the secret surface reduces to: *are (3)'s two functions branch-free over their
+secret inputs?* Section 0 verifies exactly that, automatically, on the shipped
+machine code; sections 1-2 are the underlying manual inspection and the
+statistical cross-check.
+
+## 0. Binary-level branch-freedom verification (automated, CI-gated)
+
+`proofs/constant-time/verify.sh` builds the crate (`--features ct-verify`, which
+emits `#[inline(never)]` wrappers so the functions appear as named symbols),
+disassembles `mulx` and `constant_time_eq` with `objdump`, and **fails unless**:
+
+- `mulx` contains **no conditional branch** (its carry fold is `shift`+`XOR`);
+- `constant_time_eq` contains **no conditional branch after the first
+  secret-byte load** - its only conditional branch is the *public* length check,
+  which precedes any byte access; the 16 byte comparisons compile to
+  `cmp`+`cset`/`setcc`+`and` (branchless conditional *select*, not a branch).
+
+Conditional *selects* (`csel`/`cset`, `cmov`/`setcc`) are branch-free and
+explicitly allowed; only true branches (`b.cond`/`cbz`/`tbz`, `jcc`) are flagged.
+A built-in **non-vacuity control** - a deliberately leaky early-return comparison
+- must be *rejected*, proving the check would catch a real regression. Runs in
+the `constant-time` CI job on x86; reproduce locally with
+`./proofs/constant-time/verify.sh`.
+
+This upgrades the constant-time claim for the scalar secret surface from
+*statistical* (dudect) to a *checkable property of the compiled binary*. It does
+not replace a whole-program constant-time prover (`ct-verif`/`binsec`), which
+would taint all secrets and check every path; it verifies the two functions that
+the structural argument above isolates as the entire scalar secret surface.
+
 ## 1. Emitted-assembly inspection
 
 Confirms that the compiler (a) actually emits the hardware AES/carryless-

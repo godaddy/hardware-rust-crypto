@@ -564,10 +564,23 @@ Welch t-test on both the GCM and SIV decrypt paths (tag-mismatch-position and
 content independence) on every build and **fails the build if `|t| ≥ 25`**.
 Best-of-three batches with first-pass early-exit absorb shared-runner jitter
 without flaking, since a real early-exit leak holds `|t|` in the hundreds across
-every batch (~267 measured) versus ~0.4-2.4 for the constant-time code. The
-guarantee remains statistical (not a machine-checked CT proof) and ARMv8.4
-`PSTATE.DIT` is still not set, so the finding stays **Low / residual** - but it
-is no longer un-gated.
+every batch (~267 measured) versus ~0.4-2.4 for the constant-time code.
+
+**Update 2 (binary-level CT verification).** The guarantee is no longer purely
+statistical. `proofs/constant-time/verify.sh` (in the `constant-time` CI job)
+disassembles the two scalar secret-handling functions and **fails the build
+unless they are branch-free over their secret inputs**: `mulx` has no conditional
+branch, and `constant_time_eq` has no conditional branch after its first
+secret-byte load (its only branch is the public length check; the 16 byte
+comparisons are `cmp`+`cset`/`setcc`+`and`, branchless). A non-vacuity control (a
+deliberately leaky comparison) must be rejected. Combined with the structural
+argument that these two functions are the *entire* scalar secret surface (all
+other secret ops are the vendor-data-oblivious SIMD instructions or XOR/copy),
+this is a checkable constant-time property of the *shipped machine code* for that
+surface - not a t-test. It is not a whole-program CT prover (`ct-verif`/`binsec`
+would taint all secrets and check every path); ARMv8.4 `PSTATE.DIT` is still not
+set; so the finding stays **Low / residual** - but the scalar secret surface is
+now binary-verified, not only measured.
 
 ---
 

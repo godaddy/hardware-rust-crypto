@@ -21,7 +21,8 @@ every verified property with its method and explicit trust level, see
 | **AES S-box** | The shipped `AES_SBOX` constant == the genuine FIPS-197 `affine(inverse_GF(2^8)(x))` for all 256 inputs (and is a bijection) - rules out a transcription error feeding the key schedule | `aes_sbox_is_fips197_affine_inverse` test |
 | **Memory-safety (interpreted)** | Miri over the entire **AES-256-GCM/SIV** key-state lifecycle and the real AES/GHASH paths on x86 (aliasing, provenance, OOB, uninit) | `cargo miri test --lib aes_gcm` (x86) |
 | **Memory-safety (native binary)** | Valgrind memcheck + ASan over the real AES-NI/PCLMULQDQ binary; TSan over the `Send/Sync` and cross-thread paths | CI jobs |
-| **Constant-time** | dudect Welch t-test on both decrypt paths (mismatch-position and content independence), best-of-3 and **CI-gated** (`|t| < 25`) | `tests/timing_constant_time*.rs`, `constant-time` CI job |
+| **Constant-time (binary-level)** | `objdump` verifies the two scalar secret ops (`constant_time_eq`, `mulx`) compile **branch-free** over their secret inputs - a checkable property of the shipped machine code, with a non-vacuity control - CI-gated | `proofs/constant-time/verify.sh`, `constant-time` CI job |
+| **Constant-time (statistical)** | dudect Welch t-test on both decrypt paths (mismatch-position and content independence), best-of-3 and **CI-gated** (`|t| < 25`) | `tests/timing_constant_time*.rs`, `constant-time` CI job |
 | **RNG quality** | Monobit / chi-square / serial-correlation sanity (CI) + PractRand/dieharder procedure | `tests/rng_statistical.rs`, `docs/randomness-testing.md` |
 | **Supply chain** | No third-party cipher in the production graph (CI-enforced); `cargo audit` + `cargo deny` | CI, `deny.toml` |
 
