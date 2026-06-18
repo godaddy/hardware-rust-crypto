@@ -488,7 +488,13 @@ production code - which was fixed. CI additionally runs Valgrind memcheck and
 ASan over the real AES-NI/PCLMULQDQ binary and TSan over the cross-thread paths.
 Residual: the AES-CTR generator's own `aeskeygenassist` keeps `random::` out of
 the Miri job (covered by Valgrind/ASan); aarch64 NEON crypto intrinsics are not
-yet modeled by Miri, so the Miri job runs on x86.
+yet modeled by Miri, so the Miri job runs on x86. In addition, the `kani` CI job
+runs Kani/CBMC over the *compiled* intrinsic-free logic - the counter increments,
+length validators, nonce parser, and the two attacker-facing envelope splitters -
+proving over all inputs (bounded where noted) that they never panic, never index
+out of bounds, and match the spec; this is exactly the architecture-independent
+buffer/length handling the recommendation named, now verified as compiled code
+rather than only reviewed.
 
 ---
 
@@ -1057,7 +1063,8 @@ audited; its current automated coverage is:
 | `proptest_aead` | 512×7 cases | round-trip + `*_to` consistency, single-byte tamper rejection, decrypt-parser-never-panics, construction-never-panics (both modes) |
 | `rng_statistical` | 3 | monobit / chi-square / serial-correlation sanity (PractRand/dieharder procedure in `docs/randomness-testing.md`) |
 | `fuzz/` | 4 targets | differential vs RustCrypto + decrypt-parser robustness (no panic / no UB), both modes |
-| `proofs/` | 5 proofs | machine-checked for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; ByteReverse+mulX+POLYVAL == NIST SP 800-38D GHASH; and (Z3, AES/authenticator as oracles) the composition glue == SP 800-38D / RFC 8452 (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt) |
+| `proofs/` | 7 proofs | machine-checked for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; ByteReverse+mulX+POLYVAL == NIST SP 800-38D GHASH; (Z3, AES/authenticator as oracles) the composition glue == SP 800-38D / RFC 8452 (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt); and the GHASH input framing (padding, length block, length limits) == spec |
+| `cfg(kani)` harnesses | 8 | **Kani/CBMC over the compiled Rust** (`kani` CI job): GCM/SIV counter increments == spec increments, J0 layout, length validation, nonce parser, and both envelope splitters never panic / split correctly, over all inputs (bounded where noted) |
 | `timing_constant_time` / `_siv` | 2 + 2 | dudect harnesses for the GCM and SIV decrypt paths, **CI-gated** (`constant-time` job, best-of-3, `\|t\| < 25`) |
 
 This resolves the Wycheproof and formal-proof gap (HRC-2026-08) for both modes

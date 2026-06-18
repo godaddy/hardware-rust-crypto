@@ -15,4 +15,6 @@ echo "==> prove_ghash_polyval_mapping.py   (ByteReverse+mulX+POLYVAL == GHASH)"
 python3 prove_ghash_polyval_mapping.py
 echo "==> prove_composition.py   (J0/counter/SIV-derivation/tag/round-trip == spec)"
 python3 prove_composition.py
+echo "==> prove_input_format.py   (GHASH padding + length block + limits == spec)"
+python3 prove_input_format.py
 echo "==> ALL PROOFS PASSED"

@@ -1528,3 +1528,82 @@ mod tests {
         assert_ne!(d1, d_msg, "digest must depend on the message");
     }
 }
+
+/// Kani bounded-model-checking harnesses for the intrinsic-free SIV logic.
+///
+/// Verifies the **actual compiled Rust** (CBMC) over all inputs (bounded where
+/// noted): the SIV counter increment, the length validation, and the two
+/// attacker-facing envelope parsers (ciphertext/tag and trailing-nonce splits)
+/// never panic and compute the correct boundaries. Run with `cargo kani`.
+/// Compiled only under `cfg(kani)`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{
+        increment_siv_counter, split_ciphertext_tag, split_trailing_nonce, validate_siv_lengths,
+        Error, MAX_SIV_LEN, NONCE_SIZE, TAG_SIZE,
+    };
+
+    /// The compiled `increment_siv_counter` is the RFC 8452 little-endian 32-bit
+    /// increment of the leading four bytes; the trailing twelve are untouched.
+    /// Verified over all 2^128 counter blocks.
+    #[kani::proof]
+    fn increment_siv_counter_is_le32_inc() {
+        let mut counter: [u8; 16] = kani::any();
+        let original = counter;
+        increment_siv_counter(&mut counter);
+        assert!(counter[4..] == original[4..]);
+        let low = u32::from_le_bytes([original[0], original[1], original[2], original[3]]);
+        assert!(counter[..4] == low.wrapping_add(1).to_le_bytes());
+    }
+
+    /// `validate_siv_lengths` never panics and accepts exactly the lengths within
+    /// the RFC 8452 2^36-byte cap on both the AAD and the message.
+    #[kani::proof]
+    fn validate_siv_lengths_matches_limits() {
+        let aad_len: usize = kani::any();
+        let data_len: usize = kani::any();
+        let result = validate_siv_lengths(aad_len, data_len);
+        let in_range = (aad_len as u64) <= MAX_SIV_LEN && (data_len as u64) <= MAX_SIV_LEN;
+        assert!(result.is_ok() == in_range);
+    }
+
+    /// `split_ciphertext_tag` never panics and splits at `len - TAG_SIZE`, exactly
+    /// when the input is at least one tag long. Bounded to lengths 0..=48.
+    #[kani::proof]
+    fn split_ciphertext_tag_boundary() {
+        let len: usize = kani::any();
+        kani::assume(len <= 48);
+        let buf = [0_u8; 48];
+        match split_ciphertext_tag(&buf[..len]) {
+            Ok((ct, tag)) => {
+                assert!(len >= TAG_SIZE);
+                assert!(ct.len() == len - TAG_SIZE);
+                assert!(tag.len() == TAG_SIZE);
+            }
+            Err(e) => {
+                assert!(len < TAG_SIZE);
+                assert!(matches!(e, Error::Decrypt));
+            }
+        }
+    }
+
+    /// `split_trailing_nonce` never panics and splits at `len - NONCE_SIZE`,
+    /// exactly when the input holds at least a tag and a nonce. Bounded 0..=48.
+    #[kani::proof]
+    fn split_trailing_nonce_boundary() {
+        let len: usize = kani::any();
+        kani::assume(len <= 48);
+        let buf = [0_u8; 48];
+        match split_trailing_nonce(&buf[..len]) {
+            Ok((body, nonce)) => {
+                assert!(len >= TAG_SIZE + NONCE_SIZE);
+                assert!(nonce.len() == NONCE_SIZE);
+                assert!(body.len() == len - NONCE_SIZE);
+            }
+            Err(e) => {
+                assert!(len < TAG_SIZE + NONCE_SIZE);
+                assert!(matches!(e, Error::CiphertextTooShort));
+            }
+        }
+    }
+}

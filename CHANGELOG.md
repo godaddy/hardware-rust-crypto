@@ -46,6 +46,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   J0 / SIV key-derivation / SIV tag layouts, and **decryption inverts encryption
   and accepts genuine ciphertext** for both modes (`seal`/`open` modeled
   independently; includes a non-vacuity check that a broken `open` is rejected).
+- **GHASH input-framing proof** (`prove_input_format.py`, Z3): the partial-block
+  zero padding, the 64+64-bit length block (`8·len`, big-endian, AAD then
+  ciphertext), no length-field overflow on accepted inputs, and the enforced
+  length limits == the standards' caps (`2^39−256`-bit GCM, `2^36`-byte SIV).
+- **Kani model checking** (`cargo kani`, new `kani` CI job): Kani/CBMC verifies
+  the *actual compiled Rust* of the intrinsic-free logic over all inputs (bounded
+  where noted) — the GCM/SIV counter increments == the spec increments, J0
+  layout, length validation, the nonce parser, and the two attacker-facing
+  envelope splitters never panic, never index out of bounds, and split at the
+  correct boundary. Unlike the Z3 proofs (which reason about a faithful model),
+  Kani checks the shipped machine code.
 - **Cross-architecture proof anchor** (`mul_reference_anchor`): the real backend
   `imp::mul` is checked to reproduce the proof's reference vectors on each CI
   architecture, so the x86 proof model is anchored to actual AES-NI/PCLMULQDQ
