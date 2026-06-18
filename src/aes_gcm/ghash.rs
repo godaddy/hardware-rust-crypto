@@ -2114,3 +2114,66 @@ mod aggregation_tests {
         assert_eq!(agg.finalize(), naive(&powers, &all));
     }
 }
+
+/// Silicon anchor for the formal field-multiply proofs.
+///
+/// The `proofs/` suite reasons about a Python model of the exact intrinsic
+/// multiply sequence (`field_model.py`), and pins that model to reality by
+/// reproducing reference outputs of the running backend `imp::mul`. Those
+/// reference vectors were originally captured on aarch64. This test re-derives
+/// them from `imp::mul` on whatever architecture it runs on, so the CI matrix
+/// confirms - on real x86 AES-NI/PCLMULQDQ silicon, not just aarch64 - that the
+/// hardware produces exactly the products the x86 proof model
+/// (`field_mul_x86_int`) is validated against. Keep these byte-for-byte in sync
+/// with `REFERENCE_VECTORS` in `proofs/field_model.py`.
+#[cfg(test)]
+mod mul_reference_anchor {
+    #![allow(clippy::unwrap_used)]
+
+    /// `(a, b, a*b)` in little-endian byte order, identical to
+    /// `proofs/field_model.py::REFERENCE_VECTORS`.
+    const REFERENCE_VECTORS: &[(&str, &str, &str)] = &[
+        (
+            "41208240000000004114010c06410010",
+            "2926866e2f841e9b25805d5503f554f5",
+            "a466d404a7df230146bd094d6c19fca2",
+        ),
+        (
+            "ad4df30bae771bdc76606e02b9eef064",
+            "366190e591ce077b74cc8d360c055f30",
+            "055fe5bec6717fd3a7331331366d31de",
+        ),
+        (
+            "ed8e046d8246dc27b09c408075613b88",
+            "8931e30b3d2b6310aab55d84465d4573",
+            "23578745031c5659ede3ce9940043ee5",
+        ),
+    ];
+
+    fn hex16(s: &str) -> [u8; 16] {
+        let mut out = [0_u8; 16];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn imp_mul_matches_proof_reference_vectors() {
+        if !super::hardware_available() {
+            return;
+        }
+        for (a_hex, b_hex, product_hex) in REFERENCE_VECTORS {
+            let a = hex16(a_hex);
+            let b = hex16(b_hex);
+            // SAFETY: hardware_available() returned true above.
+            let got = unsafe { super::imp::mul(&a, &b) };
+            assert_eq!(
+                got,
+                hex16(product_hex),
+                "imp::mul diverged from the captured field-multiply reference \
+                 vector the formal proof model is anchored to"
+            );
+        }
+    }
+}
