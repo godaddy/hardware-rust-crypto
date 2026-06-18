@@ -42,6 +42,8 @@
 use std::hint::black_box;
 use std::time::Instant;
 
+use aes_gcm::aead::{Aead as _, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce as RustCryptoNonce};
 use hardware_rust_crypto::aes_gcm::{HardwareAes256Gcm, NONCE_SIZE, TAG_SIZE};
 
 const KEY: [u8; 32] = [0x42; 32];
@@ -106,7 +108,7 @@ fn welch_t(a: &Stats, b: &Stats) -> f64 {
 /// timing, not the result, is what we measure).
 fn time_decrypt(key: &HardwareAes256Gcm, ciphertext: &[u8]) -> u64 {
     let start = Instant::now();
-    let result = key.decrypt(black_box(&NONCE), black_box(&[]), black_box(ciphertext));
+    let result = key.decrypt(black_box(&[]), black_box(ciphertext));
     black_box(&result);
     // Trim to a coarse tick count; wall-clock ns is fine for a t-test on
     // hundreds of thousands of samples.
@@ -166,8 +168,8 @@ fn measure(label: &str, key: &HardwareAes256Gcm, mut prep: impl FnMut(bool) -> V
 fn tag_comparison_independent_of_mismatch_position() {
     let key = HardwareAes256Gcm::new(&KEY).unwrap();
     let plaintext = [0xa5_u8; MSG_LEN];
-    let base = key.encrypt(&NONCE, &[], &plaintext).unwrap();
-    let tag_start = base.len() - TAG_SIZE;
+    let base = encrypt_envelope_with_nonce(&NONCE, &plaintext);
+    let tag_start = base.len() - TAG_SIZE - NONCE_SIZE;
 
     // Both ciphertexts fail authentication; they differ only in *where* the
     // tag mismatches. A constant-time comparison cannot tell them apart, and
@@ -175,7 +177,7 @@ fn tag_comparison_independent_of_mismatch_position() {
     let mut early_mismatch = base.clone();
     early_mismatch[tag_start] ^= 0x01;
     let mut late_mismatch = base;
-    *late_mismatch.last_mut().unwrap() ^= 0x01;
+    late_mismatch[tag_start + TAG_SIZE - 1] ^= 0x01;
 
     let t = measure("tag-mismatch-position", &key, |class| {
         if class {
@@ -217,15 +219,19 @@ fn decrypt_timing_independent_of_ciphertext_content() {
     // pools occupy the same number of distinct buffers without being
     // identical ciphertexts.
     let low_pool: Vec<Vec<u8>> = (0..POOL)
-        .map(|p| key.encrypt(&NONCE, &[], &[p as u8; MSG_LEN]).unwrap())
+        .map(|p| {
+            let nonce = nonce_for_pool_entry(p);
+            encrypt_envelope_with_nonce(&nonce, &[p as u8; MSG_LEN])
+        })
         .collect();
     let high_pool: Vec<Vec<u8>> = (0..POOL)
-        .map(|_| {
+        .map(|p| {
             let mut plaintext = [0_u8; MSG_LEN];
             for byte in &mut plaintext {
                 *byte = next_byte();
             }
-            key.encrypt(&NONCE, &[], &plaintext).unwrap()
+            let nonce = nonce_for_pool_entry(p);
+            encrypt_envelope_with_nonce(&nonce, &plaintext)
         })
         .collect();
 
@@ -243,4 +249,25 @@ fn decrypt_timing_independent_of_ciphertext_content() {
         t < T_THRESHOLD,
         "decrypt timing distinguishes ciphertext content (|t| = {t:.3} >= {T_THRESHOLD})"
     );
+}
+
+fn encrypt_envelope_with_nonce(nonce: &[u8; NONCE_SIZE], plaintext: &[u8]) -> Vec<u8> {
+    let rustcrypto = Aes256Gcm::new_from_slice(&KEY).unwrap();
+    let mut envelope = rustcrypto
+        .encrypt(
+            RustCryptoNonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad: &[],
+            },
+        )
+        .unwrap();
+    envelope.extend_from_slice(nonce);
+    envelope
+}
+
+fn nonce_for_pool_entry(index: usize) -> [u8; NONCE_SIZE] {
+    let mut nonce = NONCE;
+    nonce[0] ^= index as u8;
+    nonce
 }

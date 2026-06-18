@@ -369,15 +369,24 @@ impl SivKeyState {
     }
 
     fn encrypt_nonce_appended(&self, nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        self.encrypt_envelope(nonce, &[], plaintext)
+    }
+
+    fn encrypt_envelope(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         let nonce = nonce_from_slice(nonce)?;
-        validate_siv_lengths(0, plaintext.len())?;
+        validate_siv_lengths(aad.len(), plaintext.len())?;
         let total = plaintext
             .len()
             .checked_add(TAG_SIZE + NONCE_SIZE)
             .ok_or(Error::InputTooLarge)?;
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(plaintext);
-        let Some(tag) = siv_seal(&self.master, &nonce, &[], out.as_mut_slice()) else {
+        let Some(tag) = siv_seal(&self.master, &nonce, aad, out.as_mut_slice()) else {
             out.zeroize();
             return Err(Error::Encrypt);
         };
@@ -385,6 +394,30 @@ impl SivKeyState {
         Ok(out)
     }
 
+    fn encrypt_envelope_to(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let nonce = nonce_from_slice(nonce)?;
+        validate_siv_lengths(aad.len(), plaintext.len())?;
+        let total = plaintext
+            .len()
+            .checked_add(TAG_SIZE + NONCE_SIZE)
+            .ok_or(Error::InputTooLarge)?;
+        if out.len() < total {
+            return Err(Error::OutputTooSmall);
+        }
+
+        let ciphertext_tag_len = plaintext.len() + TAG_SIZE;
+        self.encrypt_to(&nonce, aad, plaintext, &mut out[..ciphertext_tag_len])?;
+        out[ciphertext_tag_len..total].copy_from_slice(&nonce);
+        Ok(total)
+    }
+
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
     fn encrypt_nonce_appended_in_place(
         &self,
         nonce: &[u8],
@@ -405,6 +438,16 @@ impl SivKeyState {
         };
         append_tag_nonce(in_out, &tag, &nonce);
         Ok(())
+    }
+
+    fn decrypt_envelope(&self, aad: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
+        let (ciphertext_and_tag, nonce) = split_trailing_nonce(data)?;
+        self.decrypt(nonce, aad, ciphertext_and_tag)
+    }
+
+    fn decrypt_envelope_to(&self, aad: &[u8], data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+        let (ciphertext_and_tag, nonce) = split_trailing_nonce(data)?;
+        self.decrypt_to(nonce, aad, ciphertext_and_tag, out)
     }
 }
 
@@ -427,6 +470,7 @@ fn init_siv_key_state_at(key: &[u8], state: NonNull<SivKeyState>) -> Result<(), 
 }
 
 /// Shared no-alloc nonce-appended encryption: `ciphertext || tag || nonce`.
+#[cfg(any(test, feature = "hazmat-explicit-nonce"))]
 fn encrypt_nonce_appended_to(
     state: &SivKeyState,
     nonce: &[u8],
@@ -445,20 +489,6 @@ fn encrypt_nonce_appended_to(
     // NONCE_SIZE bytes.
     out[written..total].copy_from_slice(nonce);
     Ok(total)
-}
-
-fn decrypt_nonce_appended(state: &SivKeyState, data: &[u8]) -> Result<Vec<u8>, Error> {
-    let (ciphertext_and_tag, nonce) = split_trailing_nonce(data)?;
-    state.decrypt(nonce, &[], ciphertext_and_tag)
-}
-
-fn decrypt_nonce_appended_to(
-    state: &SivKeyState,
-    data: &[u8],
-    out: &mut [u8],
-) -> Result<usize, Error> {
-    let (ciphertext_and_tag, nonce) = split_trailing_nonce(data)?;
-    state.decrypt_to(nonce, &[], ciphertext_and_tag, out)
 }
 
 fn split_trailing_nonce(data: &[u8]) -> Result<(&[u8], &[u8]), Error> {
@@ -483,7 +513,7 @@ const _: () = {
 /// Owned reusable hardware-only AES-256-GCM-SIV key state.
 pub struct HardwareAes256GcmSiv {
     state: Box<SivKeyState>,
-    /// Lazily initialized on first use of a generated-nonce method. Held
+    /// Lazily initialized on the first encrypting default API call. Held
     /// outside `SivKeyState`, so it does not affect the boxed key-state
     /// footprint.
     nonce_gen: Option<nonce::NonceGen>,
@@ -534,13 +564,48 @@ impl HardwareAes256GcmSiv {
         }
     }
 
-    /// Encrypts `plaintext` and returns `ciphertext || tag`.
+    /// Encrypts `plaintext` and returns `ciphertext || tag || nonce`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
-    /// [`Error::Encrypt`].
-    pub fn encrypt(&self, nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    /// Returns [`Error::OsEntropy`] if nonce generation fails,
+    /// [`Error::InputTooLarge`] if `plaintext` or `aad` exceed the GCM-SIV
+    /// limits, or [`Error::Encrypt`] if the backend rejects encryption.
+    pub fn encrypt(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        let nonce = self.next_nonce()?;
+        self.state.encrypt_envelope(&nonce, aad, plaintext)
+    }
+
+    /// Encrypts `plaintext` into a caller-provided buffer as
+    /// `ciphertext || tag || nonce` and returns the written length.
+    ///
+    /// No heap allocation is performed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OsEntropy`] if nonce generation fails,
+    /// [`Error::OutputTooSmall`] if `out` is shorter than
+    /// `plaintext.len() + TAG_SIZE + NONCE_SIZE`, [`Error::InputTooLarge`] if
+    /// `plaintext` or `aad` exceed the GCM-SIV limits, or [`Error::Encrypt`]
+    /// if the backend rejects encryption.
+    pub fn encrypt_to(
+        &mut self,
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let nonce = self.next_nonce()?;
+        self.state.encrypt_envelope_to(&nonce, aad, plaintext, out)
+    }
+
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn encrypt_with_nonce(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         self.state.encrypt(nonce, aad, plaintext)
     }
 
@@ -550,8 +615,11 @@ impl HardwareAes256GcmSiv {
     /// # Errors
     ///
     /// Returns [`Error::OutputTooSmall`] if `out` is shorter than
-    /// `plaintext.len() + TAG_SIZE`, plus the same errors as [`Self::encrypt`].
-    pub fn encrypt_to(
+    /// `plaintext.len() + TAG_SIZE`, plus the same errors as
+    /// [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn encrypt_with_nonce_to(
         &self,
         nonce: &[u8],
         aad: &[u8],
@@ -561,13 +629,40 @@ impl HardwareAes256GcmSiv {
         self.state.encrypt_to(nonce, aad, plaintext, out)
     }
 
-    /// Decrypts `ciphertext || tag` and returns plaintext.
+    /// Decrypts `ciphertext || tag || nonce` and returns plaintext.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
+    /// Returns [`Error::CiphertextTooShort`], [`Error::InputTooLarge`], or
     /// [`Error::Decrypt`].
-    pub fn decrypt(
+    pub fn decrypt(&self, aad: &[u8], ciphertext_tag_nonce: &[u8]) -> Result<Vec<u8>, Error> {
+        self.state.decrypt_envelope(aad, ciphertext_tag_nonce)
+    }
+
+    /// Decrypts `ciphertext || tag || nonce` into a caller-provided buffer and
+    /// returns the plaintext length.
+    ///
+    /// Decrypts into `out` before the tag comparison; if authentication fails,
+    /// the written prefix of `out` is zeroized before returning
+    /// [`Error::Decrypt`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CiphertextTooShort`], [`Error::OutputTooSmall`],
+    /// [`Error::InputTooLarge`], or [`Error::Decrypt`].
+    pub fn decrypt_to(
+        &self,
+        aad: &[u8],
+        ciphertext_tag_nonce: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        self.state
+            .decrypt_envelope_to(aad, ciphertext_tag_nonce, out)
+    }
+
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn decrypt_with_nonce(
         &self,
         nonce: &[u8],
         aad: &[u8],
@@ -586,8 +681,10 @@ impl HardwareAes256GcmSiv {
     /// # Errors
     ///
     /// Returns [`Error::OutputTooSmall`] if `out` is shorter than the
-    /// plaintext, plus the same errors as [`Self::decrypt`].
-    pub fn decrypt_to(
+    /// plaintext, plus the same errors as [`Self::decrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn decrypt_with_nonce_to(
         &self,
         nonce: &[u8],
         aad: &[u8],
@@ -601,7 +698,9 @@ impl HardwareAes256GcmSiv {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::encrypt`].
+    /// Returns the same errors as [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended(&self, nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         self.state.encrypt_nonce_appended(nonce, plaintext)
     }
@@ -611,7 +710,9 @@ impl HardwareAes256GcmSiv {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::encrypt`].
+    /// Returns the same errors as [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_in_place(
         &self,
         nonce: &[u8],
@@ -627,7 +728,9 @@ impl HardwareAes256GcmSiv {
     ///
     /// Returns [`Error::OutputTooSmall`] if `out` is shorter than
     /// `plaintext.len() + TAG_SIZE + NONCE_SIZE`, plus the same errors as
-    /// [`Self::encrypt`].
+    /// [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_to(
         &self,
         nonce: &[u8],
@@ -644,8 +747,9 @@ impl HardwareAes256GcmSiv {
     /// Returns [`Error::CiphertextTooShort`] if the input cannot contain a tag
     /// and nonce, plus [`Error::InvalidNonceLength`], [`Error::InputTooLarge`],
     /// or [`Error::Decrypt`].
+    #[doc(hidden)]
     pub fn decrypt_nonce_appended(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        decrypt_nonce_appended(&self.state, data)
+        self.state.decrypt_envelope(&[], data)
     }
 
     /// Decrypts the nonce-appended layout into a caller-provided buffer and
@@ -655,8 +759,9 @@ impl HardwareAes256GcmSiv {
     ///
     /// Returns the same errors as [`Self::decrypt_nonce_appended`] plus
     /// [`Error::OutputTooSmall`].
+    #[doc(hidden)]
     pub fn decrypt_nonce_appended_to(&self, data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
-        decrypt_nonce_appended_to(&self.state, data, out)
+        self.state.decrypt_envelope_to(&[], data, out)
     }
 
     /// Encrypts `plaintext` under a library-generated nonce, returning the nonce
@@ -669,6 +774,7 @@ impl HardwareAes256GcmSiv {
     ///
     /// Returns [`Error::OsEntropy`] if seeding the nonce sequence fails, plus
     /// the same errors as [`Self::encrypt`].
+    #[doc(hidden)]
     pub fn encrypt_with_generated_nonce(
         &mut self,
         aad: &[u8],
@@ -685,6 +791,7 @@ impl HardwareAes256GcmSiv {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::encrypt_with_generated_nonce`].
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_generated(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         let nonce = self.next_nonce()?;
         self.state.encrypt_nonce_appended(&nonce, plaintext)
@@ -739,10 +846,10 @@ impl AlignedSivStorage {
 ///
 /// Stores the key-generating AES schedule inline in the value, avoiding the
 /// heap allocation used by [`HardwareAes256GcmSiv`] while still wiping the key
-/// state on drop.
-#[repr(transparent)]
+/// state on drop. The nonce generator is held outside the inline key state.
 pub struct HardwareAes256GcmSivKeyState {
     storage: AlignedSivStorage,
+    nonce_gen: Option<nonce::NonceGen>,
 }
 
 impl HardwareAes256GcmSivKeyState {
@@ -757,13 +864,82 @@ impl HardwareAes256GcmSivKeyState {
     pub fn new(key: &[u8]) -> Result<Self, Error> {
         let mut storage = AlignedSivStorage::uninit();
         init_siv_key_state_at(key, storage.state_ptr_mut())?;
-        Ok(Self { storage })
+        Ok(Self {
+            storage,
+            nonce_gen: None,
+        })
     }
 
     /// Returns the current size of the reusable inline key state.
     #[must_use]
     pub const fn state_size() -> usize {
         std::mem::size_of::<SivKeyState>()
+    }
+
+    /// Encrypts `plaintext` and returns `ciphertext || tag || nonce`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OsEntropy`] if nonce generation fails,
+    /// [`Error::InputTooLarge`] if `plaintext` or `aad` exceed the GCM-SIV
+    /// limits, or [`Error::Encrypt`] if the backend rejects encryption.
+    pub fn encrypt(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        let nonce = self.next_nonce()?;
+        self.state_ref().encrypt_envelope(&nonce, aad, plaintext)
+    }
+
+    /// Encrypts `plaintext` into a caller-provided buffer as
+    /// `ciphertext || tag || nonce` and returns the written length.
+    ///
+    /// No heap allocation is performed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OsEntropy`] if nonce generation fails,
+    /// [`Error::OutputTooSmall`] if `out` is shorter than
+    /// `plaintext.len() + TAG_SIZE + NONCE_SIZE`, [`Error::InputTooLarge`] if
+    /// `plaintext` or `aad` exceed the GCM-SIV limits, or [`Error::Encrypt`]
+    /// if the backend rejects encryption.
+    pub fn encrypt_to(
+        &mut self,
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let nonce = self.next_nonce()?;
+        self.state_ref()
+            .encrypt_envelope_to(&nonce, aad, plaintext, out)
+    }
+
+    /// Decrypts `ciphertext || tag || nonce` and returns plaintext.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CiphertextTooShort`], [`Error::InputTooLarge`], or
+    /// [`Error::Decrypt`] if authentication fails.
+    pub fn decrypt(&self, aad: &[u8], ciphertext_tag_nonce: &[u8]) -> Result<Vec<u8>, Error> {
+        self.state_ref().decrypt_envelope(aad, ciphertext_tag_nonce)
+    }
+
+    /// Decrypts `ciphertext || tag || nonce` into a caller-provided buffer and
+    /// returns the plaintext length.
+    ///
+    /// Decrypts into `out` before the tag comparison; if authentication fails,
+    /// the written prefix of `out` is zeroized before returning
+    /// [`Error::Decrypt`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CiphertextTooShort`], [`Error::OutputTooSmall`],
+    /// [`Error::InputTooLarge`], or [`Error::Decrypt`] if authentication fails.
+    pub fn decrypt_to(
+        &self,
+        aad: &[u8],
+        ciphertext_tag_nonce: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        self.state_ref()
+            .decrypt_envelope_to(aad, ciphertext_tag_nonce, out)
     }
 
     /// Encrypts and appends the nonce: `ciphertext || tag || nonce`.
@@ -773,6 +949,8 @@ impl HardwareAes256GcmSivKeyState {
     /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
     /// [`Error::Encrypt`].
     #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended(&self, nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         self.state_ref().encrypt_nonce_appended(nonce, plaintext)
     }
@@ -784,6 +962,8 @@ impl HardwareAes256GcmSivKeyState {
     ///
     /// Returns the same errors as [`Self::encrypt_nonce_appended`].
     #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_in_place(
         &self,
         nonce: &[u8],
@@ -801,8 +981,17 @@ impl HardwareAes256GcmSivKeyState {
     /// and nonce, plus [`Error::InvalidNonceLength`], [`Error::InputTooLarge`],
     /// or [`Error::Decrypt`].
     #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn decrypt_nonce_appended(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        decrypt_nonce_appended(self.state_ref(), data)
+        self.state_ref().decrypt_envelope(&[], data)
+    }
+
+    fn next_nonce(&mut self) -> Result<[u8; NONCE_SIZE], Error> {
+        match self.nonce_gen {
+            Some(ref mut g) => g.next(),
+            None => self.nonce_gen.insert(nonce::NonceGen::new()?).next(),
+        }
     }
 
     fn state_ref(&self) -> &SivKeyState {
@@ -925,8 +1114,9 @@ impl Drop for OpaqueSivState<'_> {
 /// AES-256-GCM-SIV instance backed by caller-owned key-state storage.
 pub struct HardwareAes256GcmSivIn<'a> {
     state: OpaqueSivState<'a>,
-    /// Lazily initialized on first use of a generated-nonce method, so
-    /// caller-supplied-nonce users never draw OS entropy.
+    /// Lazily initialized on the first encrypting default API call. Not part
+    /// of the caller-placed key state, so it does not affect
+    /// `key_state_layout`.
     nonce_gen: Option<nonce::NonceGen>,
 }
 
@@ -949,13 +1139,47 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
         })
     }
 
-    /// Encrypts `plaintext` and returns `ciphertext || tag`.
+    /// Encrypts `plaintext` and returns `ciphertext || tag || nonce`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
-    /// [`Error::Encrypt`].
-    pub fn encrypt(&self, nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    /// Returns [`Error::OsEntropy`] if nonce generation fails, plus
+    /// [`Error::InputTooLarge`] or [`Error::Encrypt`].
+    pub fn encrypt(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        let nonce = self.next_nonce()?;
+        self.state_ref().encrypt_envelope(&nonce, aad, plaintext)
+    }
+
+    /// Encrypts `plaintext` into a caller-provided buffer as
+    /// `ciphertext || tag || nonce` and returns the written length.
+    ///
+    /// No heap allocation is performed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OsEntropy`] if nonce generation fails,
+    /// [`Error::OutputTooSmall`] if `out` is shorter than
+    /// `plaintext.len() + TAG_SIZE + NONCE_SIZE`, plus [`Error::InputTooLarge`]
+    /// or [`Error::Encrypt`].
+    pub fn encrypt_to(
+        &mut self,
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let nonce = self.next_nonce()?;
+        self.state_ref()
+            .encrypt_envelope_to(&nonce, aad, plaintext, out)
+    }
+
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn encrypt_with_nonce(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         self.state_ref().encrypt(nonce, aad, plaintext)
     }
 
@@ -965,8 +1189,11 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     /// # Errors
     ///
     /// Returns [`Error::OutputTooSmall`] if `out` is shorter than
-    /// `plaintext.len() + TAG_SIZE`, plus the same errors as [`Self::encrypt`].
-    pub fn encrypt_to(
+    /// `plaintext.len() + TAG_SIZE`, plus the same errors as
+    /// [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn encrypt_with_nonce_to(
         &self,
         nonce: &[u8],
         aad: &[u8],
@@ -976,13 +1203,36 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
         self.state_ref().encrypt_to(nonce, aad, plaintext, out)
     }
 
-    /// Decrypts `ciphertext || tag` and returns plaintext.
+    /// Decrypts `ciphertext || tag || nonce` and returns plaintext.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
+    /// Returns [`Error::CiphertextTooShort`], [`Error::InputTooLarge`], or
     /// [`Error::Decrypt`].
-    pub fn decrypt(
+    pub fn decrypt(&self, aad: &[u8], ciphertext_tag_nonce: &[u8]) -> Result<Vec<u8>, Error> {
+        self.state_ref().decrypt_envelope(aad, ciphertext_tag_nonce)
+    }
+
+    /// Decrypts `ciphertext || tag || nonce` into a caller-provided buffer and
+    /// returns the plaintext length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CiphertextTooShort`], [`Error::OutputTooSmall`],
+    /// [`Error::InputTooLarge`], or [`Error::Decrypt`].
+    pub fn decrypt_to(
+        &self,
+        aad: &[u8],
+        ciphertext_tag_nonce: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        self.state_ref()
+            .decrypt_envelope_to(aad, ciphertext_tag_nonce, out)
+    }
+
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn decrypt_with_nonce(
         &self,
         nonce: &[u8],
         aad: &[u8],
@@ -997,8 +1247,10 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     /// # Errors
     ///
     /// Returns [`Error::OutputTooSmall`] if `out` is shorter than the
-    /// plaintext, plus the same errors as [`Self::decrypt`].
-    pub fn decrypt_to(
+    /// plaintext, plus the same errors as [`Self::decrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn decrypt_with_nonce_to(
         &self,
         nonce: &[u8],
         aad: &[u8],
@@ -1013,7 +1265,9 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::encrypt`].
+    /// Returns the same errors as [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended(&self, nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         self.state_ref().encrypt_nonce_appended(nonce, plaintext)
     }
@@ -1023,7 +1277,9 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::encrypt`].
+    /// Returns the same errors as [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_in_place(
         &self,
         nonce: &[u8],
@@ -1040,7 +1296,9 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     ///
     /// Returns [`Error::OutputTooSmall`] if `out` is shorter than
     /// `plaintext.len() + TAG_SIZE + NONCE_SIZE`, plus the same errors as
-    /// [`Self::encrypt`].
+    /// [`Self::encrypt_with_nonce`].
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_to(
         &self,
         nonce: &[u8],
@@ -1057,8 +1315,9 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     /// Returns [`Error::CiphertextTooShort`] if the input cannot contain a tag
     /// and nonce, plus [`Error::InvalidNonceLength`], [`Error::InputTooLarge`],
     /// or [`Error::Decrypt`].
+    #[doc(hidden)]
     pub fn decrypt_nonce_appended(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        decrypt_nonce_appended(self.state_ref(), data)
+        self.state_ref().decrypt_envelope(&[], data)
     }
 
     /// Decrypts the nonce-appended layout into a caller-provided buffer and
@@ -1068,8 +1327,9 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     ///
     /// Returns the same errors as [`Self::decrypt_nonce_appended`] plus
     /// [`Error::OutputTooSmall`].
+    #[doc(hidden)]
     pub fn decrypt_nonce_appended_to(&self, data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
-        decrypt_nonce_appended_to(self.state_ref(), data, out)
+        self.state_ref().decrypt_envelope_to(&[], data, out)
     }
 
     /// Encrypts `plaintext` under a library-generated nonce, returning the nonce
@@ -1079,6 +1339,7 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     ///
     /// Returns [`Error::OsEntropy`] if seeding the nonce sequence fails, plus
     /// the same errors as [`Self::encrypt`].
+    #[doc(hidden)]
     pub fn encrypt_with_generated_nonce(
         &mut self,
         aad: &[u8],
@@ -1095,6 +1356,7 @@ impl<'a> HardwareAes256GcmSivIn<'a> {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::encrypt_with_generated_nonce`].
+    #[doc(hidden)]
     pub fn encrypt_nonce_appended_generated(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         let nonce = self.next_nonce()?;
         self.state_ref().encrypt_nonce_appended(&nonce, plaintext)

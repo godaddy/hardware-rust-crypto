@@ -81,19 +81,21 @@ configurations, and the per-message-overhead breakdown are in
 
 A single crate, `hardware-rust-crypto`, with two modules:
 
-- `aes_gcm`: hardware-only AES-256-GCM with compact reusable key state,
-  allocation-free inline owned prepared keys (`HardwareAes256GcmKeyState`), and
-  caller-controlled storage placement (`HardwareAes256GcmIn` /
-  `UninitKeyStateSlot` / `key_state_layout`), so the caller decides where keys
-  and key-equivalent state live. Key state zeroizes on drop. The same module
-  also provides nonce-misuse-resistant **AES-256-GCM-SIV** (RFC 8452) through a
-  parallel set of types (`HardwareAes256GcmSiv` /
+- `aes_gcm`: hardware-only AES-256-GCM with compact reusable key state. The
+  default encrypt API generates a unique nonce and returns the self-framed
+  `ciphertext || tag || nonce` envelope; decrypt parses the nonce from that
+  envelope. Allocation-free inline owned prepared keys
+  (`HardwareAes256GcmKeyState`) and caller-controlled storage placement
+  (`HardwareAes256GcmIn` / `UninitKeyStateSlot` / `key_state_layout`) let the
+  caller decide where keys and key-equivalent state live. Key state zeroizes on
+  drop. The same module also provides nonce-misuse-resistant **AES-256-GCM-SIV**
+  (RFC 8452) through a parallel set of types (`HardwareAes256GcmSiv` /
   `HardwareAes256GcmSivKeyState` / `HardwareAes256GcmSivIn` /
-  `SivUninitKeyStateSlot`), built on the same hardware AES and
-  carryless-multiply backends with POLYVAL authentication. Its 240-byte reusable
-  state is the leanest of the set (just the key-generating AES schedule) and 4x
-  smaller than RustCrypto's `Aes256GcmSiv`; see
-  [docs/benchmarks.md](docs/benchmarks.md).
+  `SivUninitKeyStateSlot`) with the same default envelope API, built on the
+  same hardware AES and carryless-multiply backends with POLYVAL
+  authentication. Its 240-byte reusable state is the leanest of the set (just
+  the key-generating AES schedule) and 4x smaller than RustCrypto's
+  `Aes256GcmSiv`; see [docs/benchmarks.md](docs/benchmarks.md).
 - `random`: a hardware-only AES-CTR key/nonce generator with fork detection
   and zeroized state. Initial seeding uses OS entropy (`getrandom`); reseeding
   blends CPU hardware-RNG entropy (RDSEED on x86_64, RNDRRS on aarch64
@@ -224,17 +226,18 @@ degrading.
    buffers (`encrypt_to`/`decrypt_to`) so decrypted keys never sit in
    unmanaged heap allocations, and the key generators detect process forks
    and reseed on interval.
-5. **Nonce uniqueness can be the library's job.** GCM is catastrophic on nonce
-   reuse, so beyond the caller-supplied-nonce API there are
-   `encrypt_with_generated_nonce` / `encrypt_nonce_appended_generated` methods
-   that generate a unique 96-bit nonce per call - a per-instance 64-bit counter
-   over a 96-bit salt drawn **always from the OS** and re-salted on fork - and
-   return it alongside the ciphertext. For workloads where nonce uniqueness
-   cannot be guaranteed at all, the `aes_gcm` module also offers AES-256-GCM-SIV
-   (RFC 8452), whose security degrades gracefully under accidental reuse:
-   identical (nonce, key, message) tuples produce identical ciphertext, but a
-   reused nonce never leaks the authentication key or earlier plaintexts the way
-   GCM does. The same generated-nonce helpers are available on the SIV types.
+5. **Nonce uniqueness is the library's job by default.** GCM is catastrophic
+   on nonce reuse, so `encrypt`/`encrypt_to` generate a unique 96-bit nonce per
+   call - a per-instance 64-bit counter over a 96-bit salt drawn **always from
+   the OS** and re-salted on fork - and append it to the ciphertext as
+   `ciphertext || tag || nonce`. `decrypt`/`decrypt_to` parse the nonce only
+   from that envelope. The same default envelope shape applies to AES-GCM-SIV;
+   SIV additionally degrades gracefully under accidental reuse (identical
+   `(nonce, key, message)` tuples produce identical ciphertext, but reuse does
+   not leak the authentication key or earlier plaintexts the way GCM does).
+   Low-level caller-supplied-nonce entry points for both modes are kept behind
+   the non-default `hazmat-explicit-nonce` feature for test vectors,
+   interoperability work, and benchmark investigations.
 
 ## Why hardware-only is the right default in production
 
