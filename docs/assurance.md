@@ -3,7 +3,9 @@
 This document is the map of the crate's correctness and safety assurance: the
 layers in place today, the formal-verification roadmap, and what an independent
 audit or CAVP/CMVP validation would still add. It complements the threat model
-and findings in [security-audit.md](security-audit.md).
+and findings in [security-audit.md](security-audit.md). For a single table of
+every verified property with its method and explicit trust level, see
+[proof-coverage.md](proof-coverage.md).
 
 ## 1. Assurance layers in place
 

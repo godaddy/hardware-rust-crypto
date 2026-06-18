@@ -290,7 +290,10 @@ See [docs/benchmarks.md](docs/benchmarks.md) for locally measured numbers and
 how to reproduce them.
 See [docs/constant-time.md](docs/constant-time.md) for the emitted-assembly
 inspection procedure and the dudect-style timing harness.
-See [docs/assurance.md](docs/assurance.md) for the full assurance map: the
+See [docs/proof-coverage.md](docs/proof-coverage.md) for the proof-coverage map:
+every verified property, by method, at an explicit trust level (compiled-code
+proof / all-inputs model proof / exhaustive vectors / tooling), in one table.
+See [docs/assurance.md](docs/assurance.md) for the full assurance narrative: the
 test/proof layers in place, the machine-checked GHASH/POLYVAL proofs
 ([proofs/](proofs/)), Miri/Valgrind/sanitizer coverage, and what an independent
 audit or CAVP/CMVP validation would still add.
