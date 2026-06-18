@@ -59,6 +59,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tags (the authentication decision never accepts a wrong tag or rejects a right
   one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
   the shipped machine code.
+- **First checked F\* proof over hax-extracted source** (`proofs/fstar/HrcComposition.fst`,
+  `check.sh`): F\* proves `j0` places the GCM pre-counter byte and
+  `increment_counter` preserves the leading 96 bits (the SP 800-38D `inc_32`
+  invariant) over the function bodies hax extracts verbatim from `src/aes_gcm/`,
+  with a drift guard that the proved bodies match a fresh extraction. A new
+  "extracted-source proof" (T1.5) trust tier in `docs/proof-coverage.md`.
 - **hax → F\* extraction of the composition** (`proofs/hax/extract.sh`): the
   AES-256-GCM/SIV composition glue now extracts from the *actual Rust source* to
   F\* via hax (toolchain built against hax's pinned nightly + the OCaml engine;

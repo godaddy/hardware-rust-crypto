@@ -14,6 +14,7 @@ of these levels:
 | Level | Meaning | What is trusted |
 | --- | --- | --- |
 | **T1 Compiled-code proof** | A tool symbolically verifies the *shipped machine code* over all inputs (bounded where noted). | The tool (CBMC/Miri) and the property statement. |
+| **T1.5 Extracted-source proof** | A prover verifies the property over the function a tool *extracted from the real Rust source* (not a hand-written model), with a drift guard that the proved code matches a fresh extraction. | The extractor (hax), the prover (F\*/Z3), and the drift guard. |
 | **T2 All-inputs model proof** | A property is proven for *all inputs*, but about a model (a faithful hand-translation or an exhaustive basis argument) rather than the compiled binary. | The model's fidelity to the code (anchored to real output / KATs) + the tool (Z3/sympy/exhaustive). |
 | **T3 Exhaustive vectors / differential** | Byte-for-byte agreement with the standards' vectors and independent implementations over a dense, boundary-targeted corpus - strong, but a finite sample. | The vector set and the reference implementations. |
 | **T4 Statistical / dynamic tooling** | Empirical checks: sanitizers, fuzzing, statistical timing/RNG tests. | The tool and the sample/run length. |
@@ -47,6 +48,7 @@ instruction) are at T3.
 | `constant_time_eq` == bytewise equality on equal-length tags (the auth decision) | **T1** | Kani/CBMC over all tag-pairs | `kani_proofs` (mod.rs) |
 | Generated nonce `(base+counter) mod 2⁹⁶` injective in the counter (no reuse within an instance) | **T1** | Kani/CBMC, all bases + counter pairs | `kani_proofs` (nonce.rs) |
 | Counters/J0/derivation/tag layouts + decrypt-inverts-encrypt + accepts genuine ciphertext == SP 800-38D / RFC 8452 | T2 | Z3 with AES & authenticator as uninterpreted oracles; `seal`/`open` modeled independently; non-vacuity check included | `proofs/prove_composition.py` |
+| `j0` sets the GCM pre-counter byte; `increment_counter` preserves the leading 96 bits (inc_32 invariant) — **proven over hax-extracted source** | T1.5 | **F\*** proof over the functions hax extracts from the real Rust (`extract.sh`), with a drift guard that the proved bodies match a fresh extraction | `proofs/fstar/HrcComposition.fst`, `check.sh` |
 | Composition output == RustCrypto `aes-gcm`/`aes-gcm-siv` and `ring`, both directions, dense length+AAD sweeps | T3 | Differential KATs | `tests/aes_gcm_interop.rs`, `aes_gcm_siv_interop.rs` |
 | Composition == NIST CAVP (750) / RFC 8452 C.2 / Project Wycheproof (66 GCM + 103 SIV) | T3 | Vendored known-answer vectors | `tests/nist_cavp_gcm.rs`, `wycheproof_*` |
 
@@ -73,7 +75,7 @@ instruction) are at T3.
 
 | Item | Why it's open | Plan |
 | --- | --- | --- |
-| **Extraction-based proof of the AES-*calling* composition glue** (`seal`/`open`, SIV derivation) | These call the intrinsic backends, so CBMC/Kani can't reach them; `prove_composition.py` proves a faithful *model* (T2), not the compiled source. | hax/F\*. **Extraction now works** — `proofs/hax/extract.sh` emits the composition as F\* from the real source. Remaining: write + check the F\* lemmas (axiomatize the opaque backends, relate to the SP 800-38D/RFC 8452 spec). Full status in [`proofs/hax/README.md`](../proofs/hax/README.md). |
+| **Extraction-based proof of the AES-*calling* composition glue** (`seal`/`open`, SIV derivation) | These call the intrinsic backends, so CBMC/Kani can't reach them; `prove_composition.py` proves a faithful *model* (T2), not the compiled source. | hax/F\*. **Extraction + a first F\* proof now land** — `proofs/fstar/HrcComposition.fst` proves `j0`/`increment_counter` over the hax-extracted source (T1.5). Remaining: the in-place `seal`/`open` (hax rejects in-place mutation; needs a by-value form) and the SIV derivation, plus axiomatizing the opaque backends. Full status in [`proofs/hax/README.md`](../proofs/hax/README.md). |
 | **`append_tag_nonce` functional proof** | `Vec` allocator modeling is impractical under CBMC. | Soundness is already Miri-covered (T1 for UB); a functional T1 proof awaits a lighter harness or a different tool. |
 | **Independent third-party audit / CAVP-CMVP accreditation** | Not performed; not claimed. | See `security-audit.md` HRC-2026-09 and `assurance.md` §3. |
 | **aarch64 under Miri** | Miri does not model NEON crypto intrinsics, so the Miri job runs on x86; aarch64 memory safety is Valgrind/ASan only (T4). | Track Miri intrinsic support. |
