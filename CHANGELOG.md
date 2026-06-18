@@ -55,8 +55,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   where noted) — the GCM/SIV counter increments == the spec increments, J0
   layout, length validation, the nonce parser, and the two attacker-facing
   envelope splitters never panic, never index out of bounds, and split at the
-  correct boundary. Unlike the Z3 proofs (which reason about a faithful model),
-  Kani checks the shipped machine code.
+  correct boundary; and `constant_time_eq` == bytewise equality on equal-length
+  tags (the authentication decision never accepts a wrong tag or rejects a right
+  one). Unlike the Z3 proofs (which reason about a faithful model), Kani checks
+  the shipped machine code.
+- **AES S-box proof** (`aes_sbox_is_fips197_affine_inverse` test): the shipped
+  `AES_SBOX` constant is proven to be the genuine FIPS-197 S-box —
+  `affine(inverse_GF(2^8)(x))` — for all 256 inputs, and a bijection, ruling out
+  a transcription error in the table that feeds the (cfg(miri)) software key
+  schedule.
 - **Cross-architecture proof anchor** (`mul_reference_anchor`): the real backend
   `imp::mul` is checked to reproduce the proof's reference vectors on each CI
   architecture, so the x86 proof model is anchored to actual AES-NI/PCLMULQDQ

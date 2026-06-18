@@ -609,7 +609,7 @@ mod imp {
 mod tests {
     #![allow(clippy::cast_possible_truncation, clippy::expect_used)]
 
-    use super::{software_key_schedule, Aes256};
+    use super::{software_key_schedule, Aes256, AES_SBOX};
     use core::mem::MaybeUninit;
 
     /// Reads the real hardware-expanded round keys back as bytes.
@@ -668,6 +668,62 @@ mod tests {
                 hardware_round_keys(key),
                 "software key schedule diverged from hardware"
             );
+        }
+    }
+
+    /// Proves the shipped `AES_SBOX` table is the genuine FIPS-197 S-box -
+    /// `affine(inverse_GF(2^8)(x))` - for **all 256 inputs**, not merely a table
+    /// that happens to pass the known-answer tests. This rules out a transcription
+    /// error in the 256-byte constant (which feeds both the `cfg(miri)` software
+    /// key schedule and, transitively via `software_schedule_matches_hardware`,
+    /// validates the shipped hardware key expansion). FIPS-197 section 5.1.1.
+    #[test]
+    fn aes_sbox_is_fips197_affine_inverse() {
+        // GF(2^8) multiplication with the AES reduction polynomial x^8+x^4+x^3+x+1.
+        fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+            let mut p = 0_u8;
+            for _ in 0..8 {
+                if b & 1 != 0 {
+                    p ^= a;
+                }
+                let carry = a & 0x80;
+                a <<= 1;
+                if carry != 0 {
+                    a ^= 0x1b;
+                }
+                b >>= 1;
+            }
+            p
+        }
+        // Multiplicative inverse in GF(2^8); inv(0) = 0 by FIPS-197 convention.
+        fn gf_inv(x: u8) -> u8 {
+            if x == 0 {
+                return 0;
+            }
+            (1_u16..256)
+                .map(|y| y as u8)
+                .find(|&y| gf_mul(x, y) == 1)
+                .expect("every nonzero element of GF(2^8) is invertible")
+        }
+        // The AES affine map: s = b ^ (b<<<1) ^ (b<<<2) ^ (b<<<3) ^ (b<<<4) ^ 0x63.
+        fn sbox_construct(x: u8) -> u8 {
+            let b = gf_inv(x);
+            b ^ b.rotate_left(1) ^ b.rotate_left(2) ^ b.rotate_left(3) ^ b.rotate_left(4) ^ 0x63
+        }
+
+        for x in 0..=255_u8 {
+            assert_eq!(
+                AES_SBOX[x as usize],
+                sbox_construct(x),
+                "AES_SBOX[{x:#04x}] is not affine(inverse(x))"
+            );
+        }
+
+        // It is also a bijection (a second, independent guard on the constant).
+        let mut seen = [false; 256];
+        for &v in &AES_SBOX {
+            assert!(!seen[v as usize], "AES_SBOX is not a permutation");
+            seen[v as usize] = true;
         }
     }
 }
