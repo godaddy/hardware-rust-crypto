@@ -276,6 +276,13 @@ cargo bench --bench random
 # Constant-time verification (manual; see docs/constant-time.md):
 cargo test --release --test timing_constant_time -- --ignored --nocapture
 cargo test --release --test timing_constant_time_siv -- --ignored --nocapture
+
+# Machine-checked field-arithmetic proofs (GHASH/POLYVAL core; see proofs/):
+pip install z3-solver sympy
+./proofs/run_all.sh
+
+# Full-lifecycle Miri over the AES-256-GCM/SIV key-state paths (x86):
+cargo +nightly miri test --lib aes_gcm
 ```
 
 See [docs/design.md](docs/design.md) for the implementation plan.
@@ -283,6 +290,12 @@ See [docs/benchmarks.md](docs/benchmarks.md) for locally measured numbers and
 how to reproduce them.
 See [docs/constant-time.md](docs/constant-time.md) for the emitted-assembly
 inspection procedure and the dudect-style timing harness.
+See [docs/assurance.md](docs/assurance.md) for the full assurance map: the
+test/proof layers in place, the machine-checked GHASH/POLYVAL proofs
+([proofs/](proofs/)), Miri/Valgrind/sanitizer coverage, and what an independent
+audit or CAVP/CMVP validation would still add.
+See [docs/randomness-testing.md](docs/randomness-testing.md) for the RNG
+statistical-test battery (PractRand/dieharder) and how to reproduce it.
 See [docs/security-audit.md](docs/security-audit.md) for the multi-model
 agentic security assessment (threat model, findings, standards conformance,
 and residual-risk register).

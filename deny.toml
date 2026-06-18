@@ -1,0 +1,46 @@
+# cargo-deny configuration. Run with `cargo deny check`.
+# Complements `cargo audit` (advisories) with license, source, and ban policy,
+# and mechanically backs the crate's "no third-party cipher in the production
+# graph" promise.
+
+[advisories]
+# RUSTSEC advisory database; fail on any vulnerability or unmaintained crate in
+# the dependency graph.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# This crate is Apache-2.0; only permit licenses compatible with redistribution
+# under it. Dev-dependencies may pull others; keep the set explicit.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Catch accidental introduction of a software-cipher dependency into the
+# normal (non-dev) graph. These crates are acceptable only as dev-dependencies
+# (benchmark/interop/test oracles); cargo-deny's graph includes dev deps, so we
+# do not hard-deny them here - the dedicated CI step
+# ("Forbid software ciphers ... in production graph") enforces the normal-graph
+# invariant with `cargo tree -e normal`. This section bans duplicate and
+# wildcard-versioned dependencies instead.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only allow crates from the official registry; no git or unknown sources in
+# the supply chain.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

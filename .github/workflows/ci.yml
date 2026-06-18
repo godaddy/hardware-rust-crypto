@@ -66,8 +66,18 @@ jobs:
 
       - name: Release crypto tests
         run: |
-          cargo test --release --test aes_gcm_interop
           cargo test --release -p hardware-rust-crypto
+          cargo test --release --test aes_gcm_interop
+          cargo test --release --test aes_gcm_siv_interop
+          cargo test --release --test nist_cavp_gcm
+          cargo test --release --test wycheproof_aes_gcm
+          cargo test --release --test wycheproof_aes_gcm_siv
+          cargo test --release --test proptest_aead
+
+      # Exercise the explicit-nonce entry points and the byte-exact encrypt
+      # known-answer checks gated behind them.
+      - name: Hazmat explicit-nonce tests
+        run: cargo test --features hazmat-explicit-nonce --test nist_cavp_gcm --test aes_gcm_interop --test aes_gcm_siv_interop
 
       - name: Docs
         run: cargo doc --workspace --no-deps
@@ -91,3 +101,194 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Check advisories, licenses, sources, bans
+        run: cargo deny check
+
+  miri:
+    name: miri (full unsafe lifecycle, x86)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly + miri
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly
+          components: miri
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Miri implements the x86 AES-NI (aesenc/aesenclast) and PCLMULQDQ
+      # intrinsics, so with those features enabled it executes the ENTIRE
+      # key-state lifecycle and the real AES/GHASH paths under its UB checker -
+      # aliasing, provenance, out-of-bounds, uninitialized memory. Key expansion
+      # (the one missing intrinsic, aeskeygenassist) is routed through the
+      # cfg(miri) software schedule, which `software_schedule_matches_hardware`
+      # proves byte-identical to the hardware path. aarch64 NEON crypto
+      # intrinsics are not yet implemented by Miri, hence x86 here.
+      # Runs the ENTIRE aes_gcm key-state lifecycle and the real AES/GHASH paths
+      # (GCM + SIV) under the UB checker. The AES-CTR generator backend
+      # (`random::`) has its own x86 key expansion still using aeskeygenassist,
+      # so it is excluded here and covered by Valgrind/ASan on the real binary;
+      # extending the cfg(miri) software schedule to it is a tracked follow-up.
+      - name: Miri test (aes_gcm lifecycle + crypto under the UB checker)
+        run: cargo +nightly miri test --lib aes_gcm
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2,+ssse3,+pclmulqdq"
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-strict-provenance
+
+  valgrind:
+    name: valgrind memcheck (intrinsic binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      # Valgrind runs the real x86_64 binary including AES-NI/PCLMULQDQ - the
+      # hardware path Miri cannot execute - and memchecks the `unsafe` code for
+      # invalid/uninitialized memory access on the actual SIMD code generation.
+      - name: Build test binaries
+        run: cargo test --no-run --release --lib --test aes_gcm_interop --test aes_gcm_siv_interop
+      - name: memcheck the test binaries
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bin in \
+            target/release/deps/hardware_rust_crypto-* \
+            target/release/deps/aes_gcm_interop-* \
+            target/release/deps/aes_gcm_siv_interop-*; do
+            # Skip non-executables (.d files, etc.).
+            [ -x "$bin" ] && [ -f "$bin" ] || continue
+            case "$bin" in *.d) continue;; esac
+            echo "::group::valgrind $bin"
+            valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite \
+              --track-origins=yes "$bin" --test-threads=1
+            echo "::endgroup::"
+          done
+
+  sanitizers:
+    name: ${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly + rust-src
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly
+          components: rust-src
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # ASan catches heap/stack memory errors in the intrinsic binary; TSan
+      # validates the `unsafe impl Send/Sync` and the cross-thread key-state
+      # sharing claim.
+      - name: Test under ${{ matrix.sanitizer }} sanitizer
+        run: >
+          cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu
+          --lib --test aes_gcm_interop --test aes_gcm_siv_interop
+        env:
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+          RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+
+  fuzz:
+    name: fuzz smoke (decrypt parser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      # A short run per target on every CI; deep fuzzing runs out of band. The
+      # decrypt targets are differential against RustCrypto and assert no panic
+      # / UB on arbitrary attacker-controlled input.
+      - name: Smoke-run fuzz targets
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::fuzz $target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=60 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+
+  formal-proof:
+    name: formal proof (aggregation identity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: "3.12"
+      - name: Install Z3 and sympy
+        run: pip install z3-solver sympy
+      # Machine-checks, over all inputs, that the GHASH/POLYVAL core is correct:
+      # the field multiply == RFC 8452 POLYVAL (exhaustive basis), the exact
+      # reductions are GF(2)-linear (reduce-once is exact), and the Horner
+      # recurrence == the batch sum-of-powers. The model is pinned bit-for-bit
+      # to the real backend. See proofs/README.md and docs/assurance.md 2.1.
+      - name: Run the machine-checked proof suite
+        run: ./proofs/run_all.sh
+
+  randomness-battery:
+    name: randomness battery (PractRand)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Build PractRand
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/MartyMacGyver/PractRand.git /tmp/practrand
+          cd /tmp/practrand
+          g++ -std=c++14 -O2 -Iinclude -pthread -c src/*.cpp src/RNGs/*.cpp src/RNGs/other/*.cpp
+          g++ -std=c++14 -O2 -Iinclude -pthread *.o tools/RNG_test.cpp -o RNG_test
+      # Stream the AES-CTR generator into PractRand to a bounded volume (deeper
+      # runs are manual; see docs/randomness-testing.md). --error-exitcode is not
+      # a PractRand flag, so fail the job if any FAIL/suspicious appears.
+      - name: Run PractRand over the AES-CTR generator (to 4 GiB)
+        run: |
+          set -euo pipefail
+          cargo run --release --example rng_dump \
+            | /tmp/practrand/RNG_test stdin64 -tlmin 1MB -tlmax 4GB | tee practrand.log
+          if grep -Eiq 'FAIL|suspicious' practrand.log; then
+            echo "PractRand reported FAIL/suspicious" >&2
+            exit 1
+          fi
+
+  windows:
+    name: windows-x64 (AES-NI path)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Exercises the x86_64 AES-NI/PCLMULQDQ backend on the MSVC target -
+      # portability of the intrinsic paths beyond Linux/macOS.
+      - name: Assert crypto hardware is available
+        run: cargo run --example assert_hardware
+      - name: Test (debug + release)
+        run: |
+          cargo test --workspace --all-targets
+          cargo test --release --test aes_gcm_interop --test aes_gcm_siv_interop --test nist_cavp_gcm --test wycheproof_aes_gcm --test wycheproof_aes_gcm_siv
