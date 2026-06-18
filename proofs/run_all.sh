@@ -17,4 +17,6 @@ echo "==> prove_composition.py   (J0/counter/SIV-derivation/tag/round-trip == sp
 python3 prove_composition.py
 echo "==> prove_input_format.py   (GHASH padding + length block + limits == spec)"
 python3 prove_input_format.py
+echo "==> prove_composition_inductive.py   (Horner + CTR for all n, by induction)"
+python3 prove_composition_inductive.py
 echo "==> ALL PROOFS PASSED"

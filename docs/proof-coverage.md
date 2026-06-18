@@ -35,6 +35,7 @@ instruction) are at T3.
 | Model == real backend on each arch (incl. x86 silicon) | T1/T2 | Captured `imp::mul` vectors reproduced by the running backend on the CI matrix | `mul_reference_anchor` test, `field_model.py` |
 | 8-/4-block aggregated reduction == per-block (reduce-once is exact) | T2 | Z3: both reductions GF(2)-linear; runtime cross-check | `proofs/prove_aggregation.py`, `ghash::aggregation_tests` |
 | Per-block Horner == batch sum-of-powers | T2 | Symbolic (sympy) | `proofs/prove_ghash_identity.py` |
+| Horner == sum-of-powers **for all n**, and CTR round-trips **for all n** | T2 | Symbolic induction (sympy) on the Horner step; Z3 on the counter-sequence invariant + block-wise bijection | `proofs/prove_composition_inductive.py` |
 | `ByteReverse`+`mulX`+POLYVAL == NIST SP 800-38D **GHASH**, all subkeys/blocks | T2 | Single-block identity exhaustive on the 128×128 basis, lifted by Horner induction + `ByteReverse` involution | `proofs/prove_ghash_polyval_mapping.py` |
 | GHASH input framing (partial-block zero pad, 64+64 length block, no length overflow, limits == caps) | T2 | Z3 over symbolic lengths/blocks + concrete limit equalities | `proofs/prove_input_format.py` |
 
