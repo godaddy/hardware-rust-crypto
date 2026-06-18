@@ -63,7 +63,11 @@ fn wycheproof_aes_256_gcm() {
             let mut ct_and_tag = ct.clone();
             ct_and_tag.extend_from_slice(&tag);
 
-            assert_eq!(iv.len(), NONCE_SIZE, "tcId {tc_id}: unexpected nonce length");
+            assert_eq!(
+                iv.len(),
+                NONCE_SIZE,
+                "tcId {tc_id}: unexpected nonce length"
+            );
             let cipher = HardwareAes256Gcm::new(&key).unwrap();
             total += 1;
 
@@ -71,9 +75,15 @@ fn wycheproof_aes_256_gcm() {
                 "valid" => {
                     valid += 1;
                     let produced = cipher.encrypt(&iv, &aad, &msg).unwrap();
-                    assert_eq!(produced, ct_and_tag, "tcId {tc_id} ({flags:?}): encryption mismatch");
+                    assert_eq!(
+                        produced, ct_and_tag,
+                        "tcId {tc_id} ({flags:?}): encryption mismatch"
+                    );
                     let recovered = cipher.decrypt(&iv, &aad, &ct_and_tag).unwrap();
-                    assert_eq!(recovered, msg, "tcId {tc_id} ({flags:?}): decryption mismatch");
+                    assert_eq!(
+                        recovered, msg,
+                        "tcId {tc_id} ({flags:?}): decryption mismatch"
+                    );
                 }
                 "invalid" => {
                     invalid += 1;
@@ -91,5 +101,7 @@ fn wycheproof_aes_256_gcm() {
     assert_eq!(total, 66, "expected 66 AES-256-GCM (iv96/tag128) vectors");
     assert_eq!(valid, 39);
     assert_eq!(invalid, 27);
-    println!("Wycheproof AES-256-GCM: {total} vectors ({valid} valid, {invalid} invalid) all passed");
+    println!(
+        "Wycheproof AES-256-GCM: {total} vectors ({valid} valid, {invalid} invalid) all passed"
+    );
 }

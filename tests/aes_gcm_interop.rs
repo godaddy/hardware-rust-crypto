@@ -250,10 +250,14 @@ fn every_single_byte_tamper_fails_across_sizes() {
 
         let mut tampered_aad = AAD.to_vec();
         tampered_aad[0] ^= 0x80;
-        assert!(candidate.decrypt(&NONCE, &tampered_aad, &ciphertext).is_err());
+        assert!(candidate
+            .decrypt(&NONCE, &tampered_aad, &ciphertext)
+            .is_err());
         let mut tampered_nonce = NONCE;
         tampered_nonce[0] ^= 0x80;
-        assert!(candidate.decrypt(&tampered_nonce, AAD, &ciphertext).is_err());
+        assert!(candidate
+            .decrypt(&tampered_nonce, AAD, &ciphertext)
+            .is_err());
     }
 }
 
@@ -313,7 +317,10 @@ fn dense_aad_sweep_matches_rustcrypto() {
                 rc_encrypt(&key, &nonce, &aad, &plaintext),
                 "ciphertext mismatch at aad_len={aad_len} plaintext_len={plaintext_len}"
             );
-            assert_eq!(candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(), plaintext);
+            assert_eq!(
+                candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(),
+                plaintext
+            );
         }
     }
 }
@@ -333,7 +340,10 @@ fn large_aad_and_plaintext() {
     let candidate = HardwareAes256Gcm::new(&key).unwrap();
     let candidate_ct = candidate.encrypt(&nonce, &aad, &plaintext).unwrap();
     assert_eq!(candidate_ct, rc_encrypt(&key, &nonce, &aad, &plaintext));
-    assert_eq!(candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(), plaintext);
+    assert_eq!(
+        candidate.decrypt(&nonce, &aad, &candidate_ct).unwrap(),
+        plaintext
+    );
 }
 
 fn rustcrypto_encrypt() -> Vec<u8> {
