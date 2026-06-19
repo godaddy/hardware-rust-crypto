@@ -45,5 +45,28 @@ rev), so they only rebuild when a pin changes. The GitHub cache budget is 10 GB
 per repo and entries evict after 7 days idle, so a long-quiet repo pays the cold
 cost (~7 min crux-mir, ~16 min F\*) on the first run after a gap.
 
+## Pinned tool versions (advance on purpose)
+
+Every external proof tool is pinned to an exact version/commit — nothing tracks a
+moving upstream, so a green result stays green. Advance a pin **deliberately**:
+bump the value below, push, and re-run the workflow; the cache key changes with
+the pin, so the toolchain rebuilds exactly once.
+
+| Tool | Pin | Where |
+|---|---|---|
+| SAW | `1.5.1` | `saw.yml`, `crux-mir.yml` (`SAW_VERSION`) |
+| mir-json | commit `48d0b4b2` (last schema-8) | `crux-mir.yml` (`MIR_JSON_COMMIT`) |
+| hax | rev `a914ac7` | `fstar.yml` (`HAX_REV`); mirrored in `proofs/hax/extract.sh` |
+| F\* | `v2026.03.24` (prebuilt) | `fstar.yml` (`FSTAR_VERSION`) |
+| Rust nightly (hax) | `nightly-2025-11-08` | `fstar.yml` |
+| Rust nightly (mir-json) | `nightly-2025-09-14` | `crux-mir.yml` |
+| OCaml | `5.2` | `fstar.yml` |
+
+The F\* drift guard reuses the already-installed pinned hax (it does not reinstall
+from `main`), so the proof is checked against the **same** hax that produced the
+extraction. To advance hax: bump `HAX_REV` in `fstar.yml` *and* `extract.sh`,
+re-extract locally (`proofs/hax/extract.sh`), commit any extraction changes, then
+let the F\* workflow rebuild against the new pin.
+
 Each workflow mirrors a script under `proofs/` (or a documented `cargo` command),
 so anything here reproduces locally — see `proofs/README.md` and `docs/assurance.md`.
