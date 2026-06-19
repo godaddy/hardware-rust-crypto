@@ -1,8 +1,9 @@
-name: Heavy assurance (manual)
+name: Heavy assurance
 
-# One-shot, manually triggered deep verification: the long/expensive runs that
-# are impractical on every push. Run from the Actions tab ("Run workflow").
-# Reproducible: each job documents the exact command it runs.
+# Deep verification: the long/expensive runs that are impractical to block every
+# PR on (they would risk the 6-hour job limit). Instead they run on a NIGHTLY
+# SCHEDULE so the deep coverage is continuous, plus on demand from the Actions
+# tab. Reproducible: each job documents the exact command it runs.
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +13,10 @@ on:
       practrand_max:
         description: "PractRand max volume (e.g. 256GB, 1TB)"
         default: "256GB"
+  schedule:
+    # 07:00 UTC daily (off-peak). Scheduled runs use the defaults below via the
+    # `inputs.* || '<default>'` fallbacks, since the inputs context is empty here.
+    - cron: "0 7 * * *"
 
 permissions:
   contents: read
@@ -69,7 +74,7 @@ jobs:
           RUSTDOCFLAGS: -Zsanitizer=${{ matrix.san }}
 
   deep-fuzz:
-    name: deep fuzz (${{ inputs.fuzz_seconds }}s/target)
+    name: deep fuzz (${{ inputs.fuzz_seconds || '1800' }}s/target)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -84,7 +89,7 @@ jobs:
           for target in $(cargo +nightly fuzz list); do
             echo "::group::fuzz $target"
             cargo +nightly fuzz run "$target" -- \
-              -max_total_time=${{ inputs.fuzz_seconds }} -rss_limit_mb=8192
+              -max_total_time=${{ inputs.fuzz_seconds || '1800' }} -rss_limit_mb=8192
             echo "::endgroup::"
           done
       - name: Upload any crash artifacts
@@ -115,9 +120,9 @@ jobs:
         run: |
           set -euo pipefail
           for seed in 0 1 2 3; do
-            echo "::group::PractRand seed=$seed to ${{ inputs.practrand_max }}"
+            echo "::group::PractRand seed=$seed to ${{ inputs.practrand_max || '256GB' }}"
             RNG_DUMP_SEED=$seed cargo run --release --example rng_dump \
-              | /tmp/practrand/RNG_test stdin64 -tlmin 1MB -tlmax ${{ inputs.practrand_max }} \
+              | /tmp/practrand/RNG_test stdin64 -tlmin 1MB -tlmax ${{ inputs.practrand_max || '256GB' }} \
               | tee "pr_$seed.log"
             grep -Eiq 'FAIL|suspicious' "pr_$seed.log" && { echo "seed $seed FAILED" >&2; exit 1; } || true
             echo "::endgroup::"
