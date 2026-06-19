@@ -5,23 +5,33 @@ name: SAW (LLVM bitcode proof)
 # saw_j0 == J0 (proofs/saw/composition.saw). A third independent prover (own
 # solvers) corroborating the Z3 + Kani proofs of the same property.
 #
-# Manual-only: SAW ships as a large prebuilt release bundle, too heavy to pull on
-# every push. See proofs/saw/README.md and proofs/saw/run.sh.
+# Runs on push/PR (the SAW bundle is cached) and is individually runnable. The
+# proof itself is seconds; a cold cache adds ~15s to pull the bundle.
 on:
   workflow_dispatch:
     inputs:
       saw_version:
         description: "SAW release version"
         default: "1.5.1"
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: saw-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   saw:
     name: SAW LLVM-bitcode proof (composition)
     # Pinned so the prebuilt SAW asset name (ubuntu-24.04-X64) is deterministic.
     runs-on: ubuntu-24.04
+    env:
+      # Default for push/PR (inputs.* is only set on workflow_dispatch).
+      SAW_VERSION: ${{ inputs.saw_version || '1.5.1' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
@@ -29,20 +39,28 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: Cache SAW bundle
+        id: cache-saw
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/saw
+          key: saw-bundle-${{ env.SAW_VERSION }}-ubuntu-24.04
       # Pull the prebuilt SAW release WITH its bundled solvers (Z3/Yices/etc.)
-      # for this ubuntu-24.04 runner and put its bin/ on PATH. Direct release
-      # download (no GitHub API) so it does not hit the unauthenticated rate limit.
-      - name: Install SAW ${{ inputs.saw_version }} (with solvers)
+      # for this ubuntu-24.04 runner. Direct release download (no GitHub API) so
+      # it does not hit the unauthenticated rate limit.
+      - name: Download SAW bundle (cache miss)
+        if: steps.cache-saw.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          ver="${{ inputs.saw_version }}"
+          ver="${SAW_VERSION}"
           asset="saw-${ver}-ubuntu-24.04-X64-with-solvers.tar.gz"
           url="https://github.com/GaloisInc/saw-script/releases/download/v${ver}/${asset}"
           echo "asset: $url"
           curl -fSL --retry 3 -o saw.tar.gz "$url"
           mkdir -p "$HOME/saw"
           tar xzf saw.tar.gz -C "$HOME/saw" --strip-components=1
-          echo "$HOME/saw/bin" >> "$GITHUB_PATH"
+      - name: Put SAW on PATH
+        run: echo "$HOME/saw/bin" >> "$GITHUB_PATH"
       - name: SAW version
         run: saw --version
 
