@@ -1,8 +1,9 @@
 name: Sanitizers (ASan/TSan)
 
-# AddressSanitizer + ThreadSanitizer over the intrinsic binary. Runs on every
-# push/PR and is individually runnable. The full-suite + MemorySanitizer variant
-# lives in heavy-assurance.yml.
+# AddressSanitizer + ThreadSanitizer over the intrinsic binary, on both x86_64
+# and Linux arm64 (so the ARMv8 AES/PMULL codegen is sanitized too). Runs on
+# every push/PR and is individually runnable. The full-suite + MemorySanitizer
+# variant lives in heavy-assurance.yml.
 on:
   workflow_dispatch:
   push:
@@ -18,12 +19,19 @@ concurrency:
 
 jobs:
   sanitizers:
-    name: ${{ matrix.sanitizer }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.sanitizer }} ${{ matrix.platform.arch }}
+    runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
         sanitizer: [address, thread]
+        platform:
+          - os: ubuntu-latest
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install nightly + rust-src
@@ -37,7 +45,7 @@ jobs:
       # sharing claim.
       - name: Test under ${{ matrix.sanitizer }} sanitizer
         run: >
-          cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu
+          cargo +nightly test -Z build-std --target ${{ matrix.platform.target }}
           --lib --test aes_gcm_interop --test aes_gcm_siv_interop
         env:
           RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}

@@ -17,10 +17,25 @@ concurrency:
 
 jobs:
   constant-time:
-    name: constant-time (asm-verified + dudect, gated)
-    runs-on: ubuntu-latest
+    # Verify the secret-handling machine code is branch-free on BOTH shipped
+    # architectures: x86_64 (AES-NI/PCLMULQDQ) and aarch64 (ARMv8 AES/PMULL).
+    # verify.sh already recognizes both arches' conditional-branch mnemonics.
+    name: constant-time ${{ matrix.arch }} (asm-verified + dudect, gated)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify runner architecture
+        run: |
+          actual="$(uname -m)"
+          [ "$actual" = "${{ matrix.arch }}" ] || { echo "expected ${{ matrix.arch }}, got $actual" >&2; exit 1; }
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
         with:
           toolchain: stable
