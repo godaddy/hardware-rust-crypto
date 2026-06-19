@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-19
+
+First stable release. AES-256-GCM and AES-256-GCM-SIV on hardware-only backends,
+with the full machine-checked proof and multi-platform verification battery
+(Z3/sympy, Kani, SAW, crux-mir, F\*, binary constant-time, Miri/Valgrind/
+sanitizers across x86_64 and aarch64) gating every release.
+
 ### Added
 
 - **AES-256-GCM-SIV (RFC 8452)**, nonce-misuse-resistant AEAD on the same
