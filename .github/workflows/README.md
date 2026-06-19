@@ -12,7 +12,8 @@ and pull request.
 | **Kani model checking** | `kani.yml` | push + PR | CBMC over the actual compiled Rust: counter increments, J0 layout, length validation, nonce parser, envelope splitters. |
 | **SAW (LLVM bitcode proof)** | `saw.yml` | push + PR | SAW verifies rustc's LLVM bitcode against a Cryptol spec (`saw_increment_counter` == inc_32, `saw_j0` == J0). Third independent prover. Bundle cached → ~1 min. |
 | **crux-mir (Rust MIR proof)** | `crux-mir.yml` | push + PR | crux-mir proves `increment_counter` == inc_32 over Rust MIR (fourth toolchain); `clmul_probe` documents the unmodeled-intrinsic boundary. mir-json binaries cached → ~2 min warm (~7 min cold; the stdlib MIR is regenerated each run). |
-| **F\* / hax extraction proof** | `fstar.yml` | manual + **release gate** | Extracts the composition from real Rust to F\* with hax, drift-checks it, and verifies `HrcComposition.fst`. Heaviest (~10 min warm); runs as a `publish.yml` gate, not on every PR. |
+| **F\* / hax extraction proof** | `fstar.yml` | push + PR + **release gate** | Extracts the composition from real Rust to F\* with hax, drift-checks it, and verifies `HrcComposition.fst`. Runs **inside the pinned proof image** (`proof-image.yml` → GHCR) so it is ~2 min and deterministic — fast enough to gate every PR *and* every release. |
+| **Build proof image** | `proof-image.yml` | Dockerfile change + manual | Builds/pushes the pinned F\*/hax toolchain image to GHCR. Rebuilt only when a pin is advanced on purpose. |
 | **Constant-time** | `constant-time.yml` | push + PR | Binary-level branch-freedom (disassembly) of the secret-handling functions + dudect Welch t-tests on both decrypt paths. |
 | **Miri (UB checker)** | `miri.yml` | push + PR | Runs the aes_gcm key-state lifecycle + real AES/GHASH (x86 intrinsics) under Miri's UB checker. |
 | **Valgrind memcheck** | `valgrind.yml` | push + PR | memchecks the real x86_64 AES-NI/PCLMULQDQ test binaries. |
@@ -20,25 +21,37 @@ and pull request.
 | **Fuzz smoke** | `fuzz.yml` | push + PR | Short libFuzzer run per target (decrypt parser, differential vs RustCrypto). |
 | **Randomness battery** | `randomness.yml` | push + PR | Streams the AES-CTR generator into PractRand (to 4 GiB). |
 | **Mutation testing** | `mutation.yml` | manual | cargo-mutants over the GCM composition + nonce generator (test-suite effectiveness). |
-| **Heavy assurance** | `heavy-assurance.yml` | manual | Deep/long bundle: full-suite Valgrind, ASan/TSan/MSan, 30-min/target fuzz, multi-seed PractRand + dieharder, extended proofs, mutation. |
+| **Heavy assurance** | `heavy-assurance.yml` | **nightly** + manual | Deep/long bundle: full-suite Valgrind, ASan/TSan/MSan, 30-min/target fuzz, multi-seed PractRand (256 GB) + dieharder, extended proofs, mutation. Scheduled daily (07:00 UTC) — too long to block each PR without risking the job timeout, so it runs continuously out of band. |
 | **Publish** | `publish.yml` | tag | crates.io release, gated on the F\* proof (`fstar-gate`). |
 
-## Tiering & speed
+## Gating policy: the whole battery blocks merges
 
-- **On every push/PR:** the cross-platform gate plus all the proofs/checks that
-  finish in ~minutes — including **SAW** (~20 s warm) and **crux-mir** (~2 min
-  warm), whose toolchains are cached (`actions/cache`, keyed on the pinned
-  versions). Caches are scoped by ref: a PR reads caches from the base branch, so
-  the warm path engages once these have run on `main`. crux-mir caches only the
-  mir-json binaries — the translated stdlib MIR is regenerated each run (~1 min)
-  because those artifacts don't survive cache transport to a fresh runner.
-- **F\*** is the one wildly-long proof. It runs on **manual dispatch** and as a
-  **release gate** in `publish.yml` (a tagged release can't publish unless it
-  verifies). F\* is pulled as a prebuilt binary (bundles its own z3) and the hax
-  Rust binaries are cached, so a warm run is ~10 min; only the OCaml engine still
-  builds per run.
-- **Mutation / Heavy assurance** are slow by design and report rather than gate;
-  see `docs/mutation-testing.md` for the reviewed survivor set.
+This library should rarely change, so correctness is prioritized over CI speed.
+**Every proof and platform test in the table above is a *required* status check** —
+a pull request cannot merge unless all 23 pass (branch protection, `strict`):
+
+- **5 platforms:** Linux x64, Linux arm64, macOS arm64, Windows x64, Windows arm64.
+- **5 proof engines:** Z3/sympy, Kani, SAW, crux-mir, F\*.
+- **Constant-time** on x86_64 **and** aarch64; **Miri**; **Valgrind** ×2 arches;
+  **sanitizers** (ASan/TSan) ×2 arches; **fuzz**; **RNG**; `cargo audit`/`deny`.
+
+These all finish in ~minutes because the heavy toolchains are cached or
+prebaked: SAW (~20 s warm) and crux-mir (~2 min warm) cache their toolchains via
+`actions/cache`; **F\* runs in a prebuilt GHCR image** (`proof-image.yml`) so it
+is a deterministic ~2 min job with no build at run time. None risks the 6-hour
+job limit.
+
+The only things kept **off** the per-PR gate are the genuinely long batteries —
+full-suite Valgrind, 30-min/target fuzz, 256 GB multi-seed PractRand + dieharder,
+extended proofs, mutation — which would risk that timeout. They run **nightly**
+(`heavy-assurance.yml`) so the deep coverage is continuous without blocking each
+change. Mutation reports rather than gates (it has reviewed, accepted survivors;
+see `docs/mutation-testing.md`).
+
+Caches are scoped by ref: a PR reads caches from the base branch, so the warm
+path engages once these have run on `main`. crux-mir caches only the mir-json
+binaries — the translated stdlib MIR is regenerated each run (~1 min) because
+those artifacts don't survive cache transport to a fresh runner.
 
 Caches are keyed on the pinned tool versions (SAW version, `mir-json` commit, hax
 rev), so they only rebuild when a pin changes. The GitHub cache budget is 10 GB
