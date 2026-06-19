@@ -12,6 +12,12 @@ on:
     paths:
       - ".github/docker/fstar-proof.Dockerfile"
       - ".github/workflows/proof-image.yml"
+  # Rebuild when a PR changes the image definition (e.g. advancing a pin), so the
+  # change is validated and the new tag is available before merge.
+  pull_request:
+    paths:
+      - ".github/docker/fstar-proof.Dockerfile"
+      - ".github/workflows/proof-image.yml"
 
 permissions:
   contents: read
