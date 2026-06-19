@@ -83,6 +83,10 @@ jobs:
         run: |
           set -euo pipefail
           cargo install --git https://github.com/hacspec/hax --rev "${HAX_REV}" cargo-hax --root "$HOME/hax-tools"
+          # The names/extract build script shells out to `cargo-hax`, so it must be
+          # on PATH before that crate builds (the default ~/.cargo/bin root would be
+          # on PATH automatically; a custom --root is not).
+          export PATH="$HOME/hax-tools/bin:$PATH"
           HAX=$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)
           cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"          --root "$HOME/hax-tools"
           cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"         --root "$HOME/hax-tools"
