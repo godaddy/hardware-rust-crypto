@@ -227,8 +227,9 @@ Interoperability tests against stock RustCrypto `aes-gcm`, `aes-gcm-siv`, and
 `ring` (including RFC 8452 known-answer vectors and the Project Wycheproof
 AES-256-GCM-SIV suite - counter-wrap and tag-rejection vectors included - for
 the SIV path), dudect-style constant-time timing harnesses for both the GCM and
-SIV decrypt paths, Criterion benchmark harnesses, and CI on Linux x64 and macOS
-aarch64 round out the repo.
+SIV decrypt paths, Criterion benchmark harnesses, and CI across **five platforms**
+(Linux x64, Linux arm64, macOS arm64, Windows x64, Windows arm64) round out the
+repo.
 
 The production dependency graph contains **no software cipher and no
 third-party crypto implementation**: only `getrandom`, `subtle`, and `zeroize`

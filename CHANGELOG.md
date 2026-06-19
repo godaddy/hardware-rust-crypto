@@ -150,6 +150,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Expanded GCM coverage to parity (dense AAD sweep, multi-size single-bit
   tamper, wrong key/nonce/AAD, large AAD+plaintext).
 
+### CI and gating
+
+- **Each proof/test framework is its own runnable workflow** (`.github/workflows/`,
+  with a catalog in `.github/workflows/README.md`): Z3/sympy proofs, Kani, SAW,
+  crux-mir, F\*, constant-time, Miri, Valgrind, sanitizers, fuzz, randomness, and
+  mutation can each be launched on demand from the Actions tab.
+- **The full verification battery gates merges.** Branch protection requires all
+  ~23 checks (5 platforms + 5 proof engines + constant-time/Miri/Valgrind/
+  sanitizers across both architectures + fuzz + RNG + audit/deny), `strict`. A
+  pull request cannot merge unless the entire battery passes.
+- **F\* gates every PR *and* every release**, via a **prebuilt toolchain container
+  image** (`.github/docker/fstar-proof.Dockerfile`, built/pushed to GHCR by
+  `proof-image.yml`). The proof runs inside the pinned image (~2 min, no
+  from-source build or network at run time), so the heaviest proof is affordable
+  on every change; it is also a `publish.yml` release gate.
+- **aarch64 verification on free Linux arm64 runners** (`ubuntu-24.04-arm`):
+  Valgrind memcheck, ASan/TSan, the binary branch-freedom check, dudect, and the
+  full build/test/differential suite now run on real aarch64, so the shipped
+  ARMv8 AES/PMULL machine code is verified on hardware (not by proxy). Only Miri
+  stays x86 (it does not model NEON crypto intrinsics).
+- **Five platforms** in CI: Linux x64, **Linux arm64**, **macOS arm64**,
+  Windows x64, **Windows arm64** — the aarch64 intrinsics are exercised on all of
+  ELF/GNU, Mach-O/Apple, and PE/MSVC.
+- **Nightly deep batteries** (`heavy-assurance.yml`, scheduled 07:00 UTC): the
+  long runs that would risk the per-job timeout — full-suite Valgrind, 30-min/
+  target fuzz, 256 GB multi-seed PractRand + dieharder, extended proofs, and
+  mutation — run continuously out of band instead of blocking each PR.
+
 ### Project
 
 - `SECURITY.md` (vulnerability disclosure policy), `CHANGELOG.md`, and

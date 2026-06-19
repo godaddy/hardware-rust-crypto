@@ -64,9 +64,14 @@ uninterpreted oracles, so it proves the *wiring* is the specification given
 correct primitives; it is a hand-translated model of the `mod.rs`/`siv.rs`
 functions (anchored to the real code by the NIST CAVP / RFC 8452 C.2 end-to-end
 KATs and the `increment_counter` / `counter_wraps_*` unit tests), not a tool that
-extracts the compiled Rust. A full extraction-based functional-correctness proof
-(hax/F\* or SAW) that removes the hand-translation trust step remains future work
-(see `docs/assurance.md` 2.2). **Both architectures are proven in full**: each
+extracts the compiled Rust. For the intrinsic-free *composition*, extraction-based
+proofs now land (F\* over hax-extracted source in `fstar/`, SAW over LLVM bitcode
+in `saw/`, crux-mir over MIR in `crux-mir/`). The field multiply is the one piece
+they cannot reach: SAW and crux-mir independently established that no source- or
+bitcode-level tool models the SIMD carryless-multiply (LLVM `poison` / unmodeled
+intrinsic), which is why the field arithmetic stays a model anchored to that
+instruction's real captured output (see `docs/assurance.md` 2.1-2.2). **Both
+architectures are proven in full**: each
 exact intrinsic sequence (aarch64 `karatsuba`+`mont_reduce`, x86
 `clmul_wide`+`reduce`) is modeled, anchored to the same captured backend output
 and to RFC 8452, and basis-proven equal to POLYVAL `dot`, with both reductions
