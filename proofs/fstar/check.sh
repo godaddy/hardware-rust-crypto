@@ -15,7 +15,9 @@ ROOT="$(cd ../.. && pwd)"
 
 eval "$(opam env)"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
-HAX="$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)"
+# Honor a pre-set HAX (the proof container bakes an absolute path, since container
+# jobs override $HOME); otherwise locate the hax checkout under the cargo home.
+HAX="${HAX:-$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)}"
 BUNDLE="$ROOT/proofs/fstar/extraction/Hardware_rust_crypto.Aes_gcm.Bundle.fst"
 
 # --- 1. drift guard: the proved bodies must match a fresh extraction ----------
