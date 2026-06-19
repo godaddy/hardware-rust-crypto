@@ -9,11 +9,16 @@
 # extracted as opaque calls, to be axiomatized in the F* proof.
 #
 # Prerequisites (one-time; see proofs/hax/README.md for why each is needed):
-#   1. hax frontend + drivers, built against hax's pinned nightly:
+#   1. hax frontend + drivers, built against hax's pinned nightly. Pin the hax
+#      revision so local extraction matches CI exactly (.github/workflows/fstar.yml
+#      HAX_REV); advance it deliberately, never by tracking main:
 #        rustup toolchain install nightly-2025-11-08 \
 #          -c rustc-dev -c llvm-tools-preview -c rust-src -c rustfmt
+#        cargo install --git https://github.com/hacspec/hax --rev a914ac7 cargo-hax
 #        HAX=$(ls -d ~/.cargo/git/checkouts/hax-*/*/ | head -1)   # hax checkout
-#        cargo install --git https://github.com/hacspec/hax cargo-hax
+#        cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"          # driver
+#        cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"         # rust engine
+#        cargo +nightly-2025-11-08 install --path "$HAX/engine/names/extract" # codegen
 #        cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"          # driver
 #        cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"         # rust engine
 #        cargo +nightly-2025-11-08 install --path "$HAX/engine/names/extract" # codegen
