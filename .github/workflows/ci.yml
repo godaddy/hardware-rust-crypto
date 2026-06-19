@@ -23,6 +23,9 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             expected_arch: x86_64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            expected_arch: aarch64
           - name: macos-aarch64
             os: macos-14
             expected_arch: arm64

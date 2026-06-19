@@ -20,8 +20,8 @@ every verified property with its method and explicit trust level, see
 | **Model checking (compiled Rust)** | Kani/CBMC verifies the **actual compiled** intrinsic-free logic over all inputs: GCM/SIV counter increments == the spec increments, J0 layout, length validation, the nonce parser, the two envelope splitters (no panic, correct boundaries), `constant_time_eq` == bytewise equality on equal-length tags (the auth decision never accepts a wrong tag or rejects a right one), and the generated-nonce arithmetic is injective in the counter (no nonce reuse within an instance; HRC-2026-01) | `cargo kani` (`cfg(kani)` harnesses) |
 | **AES S-box** | The shipped `AES_SBOX` constant == the genuine FIPS-197 `affine(inverse_GF(2^8)(x))` for all 256 inputs (and is a bijection) - rules out a transcription error feeding the key schedule | `aes_sbox_is_fips197_affine_inverse` test |
 | **Memory-safety (interpreted)** | Miri over the entire **AES-256-GCM/SIV** key-state lifecycle and the real AES/GHASH paths on x86 (aliasing, provenance, OOB, uninit) | `cargo miri test --lib aes_gcm` (x86) |
-| **Memory-safety (native binary)** | Valgrind memcheck + ASan over the real AES-NI/PCLMULQDQ binary; TSan over the `Send/Sync` and cross-thread paths | CI jobs |
-| **Constant-time (binary-level)** | `objdump` verifies the two scalar secret ops (`constant_time_eq`, `mulx`) compile **branch-free** over their secret inputs - a checkable property of the shipped machine code, with a non-vacuity control - CI-gated | `proofs/constant-time/verify.sh`, `constant-time` CI job |
+| **Memory-safety (native binary)** | Valgrind memcheck + ASan over the real AES-NI/PCLMULQDQ (x86_64) **and ARMv8 AES/PMULL (aarch64)** binaries; TSan over the `Send/Sync` and cross-thread paths - both architectures on Linux runners | CI jobs (x86_64 + `ubuntu-24.04-arm`) |
+| **Constant-time (binary-level)** | `objdump` verifies the two scalar secret ops (`constant_time_eq`, `mulx`) compile **branch-free** over their secret inputs on **both** shipped architectures (x86_64 and aarch64) - a checkable property of the shipped machine code, with a non-vacuity control - CI-gated | `proofs/constant-time/verify.sh`, `constant-time` CI job (x86_64 + aarch64) |
 | **Constant-time (statistical)** | dudect Welch t-test on both decrypt paths (mismatch-position and content independence), best-of-3 and **CI-gated** (`|t| < 25`) | `tests/timing_constant_time*.rs`, `constant-time` CI job |
 | **RNG quality** | Monobit / chi-square / serial-correlation sanity (CI) + PractRand/dieharder procedure | `tests/rng_statistical.rs`, `docs/randomness-testing.md` |
 | **Supply chain** | No third-party cipher in the production graph (CI-enforced); `cargo audit` + `cargo deny` | CI, `deny.toml` |
@@ -41,7 +41,10 @@ generator backend (`random::`) has its own key expansion still using
 and ASan on the real binary (extending the software schedule to it is a tracked
 follow-up). aarch64 NEON crypto intrinsics are not yet implemented by Miri, so
 the Miri job runs on x86; the aarch64 binary's memory safety is covered by
-Valgrind and ASan. The approaches are complementary - Miri adds
+Valgrind and ASan **running on Linux arm64 runners** (`ubuntu-24.04-arm`), and its
+secret-handling machine code is checked branch-free by the same arm64
+constant-time job - so the shipped ARMv8 codegen is verified on real aarch64
+hardware, not by proxy. The approaches are complementary - Miri adds
 aliasing/provenance checking the others cannot.
 
 Miri did its job: on the first full-lifecycle run it flagged a genuine Stacked
@@ -153,17 +156,39 @@ spec:
   in-place `seal`/`open` (hax rejects in-place mutation - needs a by-value form),
   the SIV derivation, and axiomatizing the opaque backends to prove the full
   composition. See [`proofs/hax/README.md`](../proofs/hax/README.md).
-- **SAW / Cryptol** - prove the compiled routine matches a Cryptol spec at the
-  LLVM level, which can reach the intrinsic code the above cannot.
+- **SAW / Cryptol** - *done for the intrinsic-free core.* SAW (Galois) verifies
+  rustc's **LLVM bitcode** of `saw_increment_counter`/`saw_j0` against a Cryptol
+  spec (`proofs/saw/composition.saw`), a third independent prover corroborating
+  Z3 + Kani.
+- **crux-mir** - *done for the intrinsic-free core.* crux-mir (Galois)
+  symbolically executes the **Rust MIR** and proves `increment_counter` ==
+  `inc_32` (`proofs/crux-mir/`), a fourth independent toolchain.
 
-These extraction routes are tracked as future work; the crate does not yet claim
-extraction-based machine-checked functional correctness, only the SMT-checked
-composition correctness (modulo the hand-translated model) described above.
+So the counter-increment property is now confirmed by **five** independent
+engines (Z3, Kani/CBMC, SAW-LLVM, crux-mir, and F\* over hax-extracted source).
+A useful negative result fell out of this: SAW (via an LLVM `poison` value) and
+crux-mir (via an unmodeled-intrinsic translation error) **independently
+established that no source- or bitcode-level tool available here can reach
+*through* the SIMD carryless-multiply instruction** - which is exactly why the
+field arithmetic (§2.1) is proven against a model *anchored to that instruction's
+real captured output* rather than by symbolic execution of the intrinsic. What
+remains open is the AES-*calling* composition (`seal`/`open`, SIV derivation): hax
+rejects the in-place mutation form and the opaque backends must be axiomatized, so
+that glue is still covered at the model level (`prove_composition.py`, T2) plus
+the differential KATs (T3). See [`proofs/crux-mir/README.md`](../proofs/crux-mir/README.md)
+and [`proofs/saw/README.md`](../proofs/saw/README.md).
 
 ### 2.3 Constant-time verification method
 
-Constant-time is verified **statistically** (dudect / Welch t-test), not by a
-deterministic tool. The Valgrind-secret-poisoning technique (ctgrind: mark the
+Constant-time is verified two ways, primary and corroborating. **Primary
+(deterministic):** the two scalar secret-handling routines (`constant_time_eq`
+and the GHASH `mulx` carry fold) are disassembled from the shipped binary and
+checked to be **branch-free over their secret inputs** - a property of the actual
+machine code, with a deliberately-leaky control that must be rejected, run on
+**both** shipped architectures (x86_64 and aarch64; `verify.sh` recognizes both
+instruction sets' conditional branches). **Corroborating (statistical):** dudect /
+Welch t-test on both decrypt paths. The Valgrind-secret-poisoning technique
+(ctgrind: mark the
 key as uninitialized, let memcheck flag any branch/index that depends on it) is
 deliberately **not** used here: memcheck's shadow-value propagation through the
 AES-NI/PCLMULQDQ SIMD instructions is incomplete, which produces false

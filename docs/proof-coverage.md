@@ -68,10 +68,10 @@ instruction) are at T3.
 | Property | Level | Method | Where |
 | --- | --- | --- | --- |
 | Full AES-256-GCM/SIV key-state lifecycle + real AES/GHASH paths are UB-free (aliasing, provenance, OOB, uninit) | T1 | Miri on x86 (incl. the unsafe envelope-trailer write `append_tag_nonce`) | `cargo miri test --lib aes_gcm` |
-| Native intrinsic binary is memory-clean | T4 | Valgrind memcheck + ASan; TSan on cross-thread paths | CI |
+| Native intrinsic binary is memory-clean, **both architectures** | T4 | Valgrind memcheck + ASan; TSan on cross-thread paths - run on x86_64 **and Linux arm64** (`ubuntu-24.04-arm`) | CI |
 | Decrypt parser never panics / no UB on arbitrary bytes | T1+T4 | Kani (splitters) + fuzz + proptest | `kani_proofs`, `fuzz/`, `tests/proptest_aead.rs` |
-| The two scalar secret ops (`constant_time_eq`, `mulx`) are branch-free over secret inputs | T1 | **`objdump` of the shipped binary** — no conditional branch after a secret-byte load; non-vacuity control rejected | `proofs/constant-time/verify.sh` |
-| Decrypt paths constant-time (data-independent, end to end) | T4 | dudect Welch t-test, **CI-gated** (`\|t\| < 25`, best-of-3) | `constant-time` CI job |
+| The two scalar secret ops (`constant_time_eq`, `mulx`) are branch-free over secret inputs, **on x86_64 and aarch64** | T1 | **`objdump` of the shipped binary** — no conditional branch after a secret-byte load; non-vacuity control rejected; run on both arches (`verify.sh` knows both instruction sets) | `proofs/constant-time/verify.sh` |
+| Decrypt paths constant-time (data-independent, end to end), **both arches** | T4 | dudect Welch t-test on x86_64 + Linux arm64, **CI-gated** (`\|t\| < 25`, best-of-3) | `constant-time` CI job |
 | No third-party cipher in the production graph; advisories/licenses clean | T4 | CI-enforced graph check + `cargo audit` + `cargo deny` | CI, `deny.toml` |
 | RNG output quality | T4 | monobit/chi-square/serial-correlation + PractRand/dieharder procedure | `tests/rng_statistical.rs`, `docs/randomness-testing.md` |
 | Test-suite effectiveness (the tests catch injected bugs) | T4 | **mutation testing** (`cargo-mutants`) over the GCM composition + nonce generator; genuine gaps closed, residual survivors individually accounted for | `docs/mutation-testing.md`, `heavy-assurance` workflow |
@@ -83,7 +83,7 @@ instruction) are at T3.
 | **Extraction-based proof of the AES-*calling* composition glue** (`seal`/`open`, SIV derivation) | These call the intrinsic backends, so CBMC/Kani can't reach them; `prove_composition.py` proves a faithful *model* (T2), not the compiled source. | hax/F\*. **Extraction + a first F\* proof now land** — `proofs/fstar/HrcComposition.fst` proves `j0`/`increment_counter` over the hax-extracted source (T1.5). Remaining: the in-place `seal`/`open` (hax rejects in-place mutation; needs a by-value form) and the SIV derivation, plus axiomatizing the opaque backends. Full status in [`proofs/hax/README.md`](../proofs/hax/README.md). |
 | **`append_tag_nonce` functional proof** | `Vec` allocator modeling is impractical under CBMC. | Soundness is already Miri-covered (T1 for UB); a functional T1 proof awaits a lighter harness or a different tool. |
 | **Independent third-party audit / CAVP-CMVP accreditation** | Not performed; not claimed. | See `security-audit.md` HRC-2026-09 and `assurance.md` §3. |
-| **aarch64 under Miri** | Miri does not model NEON crypto intrinsics, so the Miri job runs on x86; aarch64 memory safety is Valgrind/ASan only (T4). | Track Miri intrinsic support. |
+| **aarch64 under Miri** | Miri does not model NEON crypto intrinsics, so the Miri job runs on x86. aarch64 is otherwise covered on real Linux arm64 runners: Valgrind + ASan/TSan (memory safety), the binary branch-freedom check (constant-time), dudect, and the full build/test/differential suite. Only Miri's aliasing/provenance layer is x86-only. | Track Miri NEON intrinsic support. |
 
 ## Reproduce everything
 

@@ -4,6 +4,127 @@ Hardware-only AES-256-GCM, AES-256-GCM-SIV, and key/nonce generation for Rust.
 Every AES round and every GF(2^128) multiply executes as a CPU instruction; no
 software fallback is compiled in.
 
+<!-- The whole verification battery runs in the open. Each badge links to its live
+     runs and full logs - click through to see exactly what executed and its output. -->
+[![CI](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/ci.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/ci.yml)
+[![Z3/sympy proofs](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/proofs-z3.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/proofs-z3.yml)
+[![Kani](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/kani.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/kani.yml)
+[![SAW](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/saw.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/saw.yml)
+[![crux-mir](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/crux-mir.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/crux-mir.yml)
+[![F*](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/fstar.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/fstar.yml)
+[![Constant-time](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/constant-time.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/constant-time.yml)
+[![Miri](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/miri.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/miri.yml)
+[![Sanitizers](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/godaddy/hardware-rust-crypto/actions/workflows/sanitizers.yml)
+
+## Proven secure, not just asserted secure
+
+Most crypto libraries ask you to trust that their code is correct. This one is
+built so you do not have to: the security-critical logic is **machine-checked
+from several independent angles**, the cryptographic primitives are computed by
+**validated CPU silicon** rather than by this code, and every check runs in CI
+where you can re-run it yourself.
+
+**The cryptography is the CPU's job; the orchestration is ours, and we prove the
+orchestration.** Every AES round and every GF(2^128) multiplication is a single
+dedicated hardware instruction - AES-NI / PCLMULQDQ on x86_64, the ARMv8
+Cryptographic Extensions (AES / PMULL) on aarch64 - the same cryptographic
+silicon that terminates TLS across the internet. There is no software S-box, no
+table lookup, no bitsliced fallback, so the classic AES cache-timing attack
+surface does not exist here: the S-box never touches memory. What this library
+*adds* is the thin, non-secret plumbing around those instructions - counter
+increments, the `J0` construction, nonce generation, length framing, the
+tag-comparison decision, key lifecycle - and that plumbing is what we have proven
+exhaustively.
+
+### The composition logic is checked by independent verification engines
+
+The intrinsic-free glue is verified **for all inputs** by tools that share no
+code and no solver heritage - they would each have to fail the same way to let a
+bug through. The single most safety-critical line - the counter increment, since
+a wrong increment silently breaks nonce uniqueness and is catastrophic for GCM -
+is independently confirmed by **five** of them:
+
+| Engine | Verifies over… | Proves (among others) |
+| --- | --- | --- |
+| **Kani / CBMC** | the **actual compiled machine code** | counter == SP 800-38D `inc_32` / RFC 8452 increment over all 2¹²⁸ blocks; `J0` layout; length validators; the nonce parser and envelope splitters never panic or read out of bounds; `constant_time_eq` accepts exactly the correct tags; generated nonces are injective in the counter (no reuse within an instance) |
+| **SAW** (Galois) | the **LLVM bitcode** | `increment_counter` == `inc_32`, `j0` == `IV‖0³¹‖1`, against a Cryptol spec |
+| **crux-mir** (Galois) | the **Rust MIR** | `increment_counter` == `inc_32` |
+| **F\*** (via hax) | **F\* extracted from the real Rust source** | `j0` sets the pre-counter byte; `increment_counter` preserves the leading 96 bits - with a drift guard that the proved code matches a fresh extraction |
+| **Z3 / SMT** | an independently-written model | decryption inverts encryption, the SIV key derivation, and the length framing == SP 800-38D / RFC 8452, with a built-in non-vacuity check |
+| **sympy** | symbolic algebra | the Horner recurrence == the batch sum-of-powers, for every block count |
+
+### The one piece of novel math is proven for every possible input
+
+The GHASH/POLYVAL field multiply is the only hand-built cryptographic arithmetic
+in the crate. It is proven **equal to the RFC 8452 specification for all inputs**
+- not sampled, all of them - by an exhaustive argument over the 128×128 GF(2)
+basis (the operation is GF(2)-bilinear, so its values on a basis determine it
+everywhere), on both architectures. The model is first pinned byte-for-byte to
+the output of the real CPU instructions, so "the model" = "the shipped code" =
+"the spec" before any proof is trusted. Notably, two of the engines above (SAW
+and crux-mir) independently established that no source- or bitcode-level tool can
+see *through* the hardware carryless-multiply instruction itself - which is
+exactly why the field proof is anchored to that instruction's real output: the
+primitive is the CPU vendor's validated silicon, and we prove our use of it.
+
+### …and tested the way you test something you cannot afford to get wrong
+
+- **Constant-time, in the shipped binary.** The secret-handling routines are
+  disassembled and verified **branch-free over their secret inputs** - a
+  checkable property of the machine code, with a deliberately-leaky control that
+  must be rejected - backed by a CI-gated dudect (Welch t-test) timing test on
+  both decrypt paths.
+- **Memory safety, five ways.** The entire key-state lifecycle and the real
+  AES/GHASH paths run clean under Miri's undefined-behavior checker (aliasing,
+  provenance, out-of-bounds, uninitialized reads), Valgrind memcheck,
+  AddressSanitizer, ThreadSanitizer, and continuous fuzzing of the decrypt parser.
+- **Wire-format correctness against three independent lineages.** Byte-for-byte
+  agreement with RustCrypto, **`ring`** (BoringSSL-derived), and **OpenSSL** -
+  implementations with no shared ancestry - plus NIST CAVP (750 vectors),
+  RFC 8452 Appendix C.2, and Project Wycheproof (every tag-rejection and
+  counter-wrap case included).
+- **Randomness quality.** The hardware AES-CTR key/nonce generator passes the
+  PractRand and dieharder statistical batteries.
+- **We test the tests.** Mutation testing (`cargo-mutants`) confirms the suite
+  actually catches injected bugs; the few intentional survivors are individually
+  accounted for.
+- **Supply chain.** The production dependency graph contains no third-party
+  cipher and no third-party crypto implementation - and CI **fails the build** if
+  one ever appears.
+
+None of this is a one-time claim, and none of it is hidden. Every item above runs
+in **public continuous integration** as its own re-runnable workflow: the badges
+at the top of this file link straight to the live runs, where anyone can read the
+exact commands that executed and their full output - the SAW and crux-mir proofs
+printing `Proof succeeded`, Kani discharging its harnesses, F\* printing
+`PROOF VERIFIED`, the constant-time disassembly check, the differential vectors.
+The verification is open to inspection, reproducible from the scripts under
+[`proofs/`](proofs/), and re-runnable on demand from the Actions tab. For the
+exact statement of each property, its method, and an explicit trust level -
+compiled-code proof → all-inputs model proof → exhaustive vectors → tooling - see
+[docs/proof-coverage.md](docs/proof-coverage.md); for the full narrative, see
+[docs/assurance.md](docs/assurance.md).
+
+### Will quantum computers break this? No - and AES-256 is the reason
+
+A fair question, and the short answer for symmetric encryption is **no**. The
+algorithms quantum computers actually break are the *asymmetric* ones - RSA and
+elliptic-curve key exchange and signatures, via Shor's algorithm - and this
+library uses none of them. Symmetric ciphers like AES are only modestly affected:
+the best known quantum attack, Grover's algorithm, at most *halves* the effective
+key length. That takes **AES-256 from a 256-bit to an estimated 128-bit security
+level - still far beyond the reach of any computer, classical or quantum** - and
+Grover's speedup parallelizes so poorly that the practical margin is larger
+still. This is precisely why NIST and the NSA's CNSA 2.0 suite both list
+**AES-256 as quantum-resistant** and approved for protecting information into the
+post-quantum era, and why doubling the symmetric key size (to 256 bits) is the
+standard post-quantum guidance.
+
+Because this library is **AES-256 throughout** - both AEAD modes and the
+key/nonce generator - the symmetric cryptography here is considered safe against
+quantum attack. (Post-quantum *key exchange* and *signatures* are a separate,
+asymmetric problem that a symmetric AEAD library neither solves nor needs to.)
+
 ## Why: the performance and footprint delta
 
 Leaning almost entirely on the CPU's dedicated cryptographic instructions -
