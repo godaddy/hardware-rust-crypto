@@ -472,11 +472,13 @@ this fork exists for - a trade `RustCrypto`'s audited code also declines):
    there is simply no comparison or select on a secret for the optimizer to
    transform; the XOR/copy loops are unconditional.
 
-This is checked, not just asserted: see `docs/constant-time.md` for the
-procedure that inspects the emitted assembly of the secret-handling paths
-(confirming AES/PMULL instructions are present and no secret-dependent
-branch is emitted), and for the dudect-style statistical timing harness that
-measures decrypt timing across valid/invalid tags.
+This is checked, not just asserted, and both checks are CI-gated on x86_64 and
+aarch64: see `docs/constant-time.md` for (1) the **binary branch-freedom
+verification** - the two scalar secret-handling functions disassembled from the
+shipped binary and required to be branch-free over their secret inputs, with a
+deliberately-leaky non-vacuity control that must be rejected - and (2) the
+corroborating dudect-style statistical timing harness that measures decrypt
+timing across valid/invalid tags (fails the build if Welch `|t| ≥ 25`).
 
 Accepted zeroization residual risk:
 

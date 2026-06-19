@@ -489,10 +489,13 @@ uninitialized reads) and passes. The one intrinsic Miri lacks
 proven byte-identical to hardware by `software_schedule_matches_hardware`. Miri
 found a genuine Stacked Borrows violation on its first run - in a *test*, not
 production code - which was fixed. CI additionally runs Valgrind memcheck and
-ASan over the real AES-NI/PCLMULQDQ binary and TSan over the cross-thread paths.
-Residual: the AES-CTR generator's own `aeskeygenassist` keeps `random::` out of
-the Miri job (covered by Valgrind/ASan); aarch64 NEON crypto intrinsics are not
-yet modeled by Miri, so the Miri job runs on x86. In addition, the `kani` CI job
+ASan over the real AES-NI/PCLMULQDQ binary and TSan over the cross-thread paths -
+and **now also over the ARMv8 AES/PMULL binary on Linux arm64 runners**
+(`ubuntu-24.04-arm`), so the aarch64 code generation is memory-checked on real
+hardware, not by proxy. Residual: the AES-CTR generator's own `aeskeygenassist`
+keeps `random::` out of the Miri job (covered by Valgrind/ASan); aarch64 NEON
+crypto intrinsics are not yet modeled by Miri, so the Miri job runs on x86 (the
+aarch64 binary's memory safety is the Valgrind/ASan/TSan arm64 jobs). In addition, the `kani` CI job
 runs Kani/CBMC over the *compiled* intrinsic-free logic - the counter increments,
 length validators, nonce parser, and the two attacker-facing envelope splitters -
 proving over all inputs (bounded where noted) that they never panic, never index
@@ -521,8 +524,11 @@ the same trust boundary `ring`/RustCrypto rely on; on ARMv8.4+ the formal
 guarantee is gated by `PSTATE.DIT`, which this library does not set; (2)
 absence of secret-dependent control flow, verified by review and assembly
 inspection; (3) compiler non-interference, defended by `subtle` and
-`core::hint::black_box` barriers. None of these is a machine-checked proof, and
-the statistical test is machine-sensitive and not CI-gated.
+`core::hint::black_box` barriers. *As originally assessed*, none of these was a
+machine-checked proof and the statistical test was not CI-gated - both gaps are
+now closed (see the Updates below): the scalar secret surface is verified
+binary-branch-free as a deterministic, CI-gated check on both architectures, and
+the dudect timing test is CI-gated.
 
 **Evidence.** Tag comparison is constant-time via `subtle`; the one scalar
 secret-dependent operation (`mulx`'s carry fold) is barriered:
@@ -573,14 +579,18 @@ unless they are branch-free over their secret inputs**: `mulx` has no conditiona
 branch, and `constant_time_eq` has no conditional branch after its first
 secret-byte load (its only branch is the public length check; the 16 byte
 comparisons are `cmp`+`cset`/`setcc`+`and`, branchless). A non-vacuity control (a
-deliberately leaky comparison) must be rejected. Combined with the structural
-argument that these two functions are the *entire* scalar secret surface (all
-other secret ops are the vendor-data-oblivious SIMD instructions or XOR/copy),
-this is a checkable constant-time property of the *shipped machine code* for that
-surface - not a t-test. It is not a whole-program CT prover (`ct-verif`/`binsec`
-would taint all secrets and check every path); ARMv8.4 `PSTATE.DIT` is still not
-set; so the finding stays **Low / residual** - but the scalar secret surface is
-now binary-verified, not only measured.
+deliberately leaky comparison) must be rejected. The check runs on **both shipped
+architectures** (x86_64 and aarch64; `verify.sh` recognizes both instruction
+sets' conditional-branch mnemonics), so the ARMv8 secret-handling code generation
+is verified branch-free on real hardware, not only the x86 one. Combined with the
+structural argument that these two functions are the *entire* scalar secret
+surface (all other secret ops are the vendor-data-oblivious SIMD instructions or
+XOR/copy), this is a checkable constant-time property of the *shipped machine
+code* for that surface - not a t-test. It is not a whole-program CT prover
+(`ct-verif`/`binsec` would taint all secrets and check every path); ARMv8.4
+`PSTATE.DIT` is still not set; so the finding stays **Low / residual** - but the
+scalar secret surface is now binary-verified on both architectures, not only
+measured.
 
 ---
 
@@ -1083,13 +1093,23 @@ audited; its current automated coverage is:
 | `proofs/` | 7 proofs | machine-checked for **all inputs**: basis-exhaustive multiply == POLYVAL; Z3 reduction linearity; sympy Horner identity; ByteReverse+mulX+POLYVAL == NIST SP 800-38D GHASH; (Z3, AES/authenticator as oracles) the composition glue == SP 800-38D / RFC 8452 (J0/counter/SIV-derivation/tag, decrypt-inverts-encrypt); and the GHASH input framing (padding, length block, length limits) == spec |
 | `cfg(kani)` harnesses | 10 | **Kani/CBMC over the compiled Rust** (`kani` CI job): GCM/SIV counter increments == spec increments, J0 layout, length validation, nonce parser, both envelope splitters never panic / split correctly, `constant_time_eq` == bytewise equality on equal-length tags, and the generated-nonce arithmetic is injective in the counter, over all inputs (bounded where noted) |
 | `timing_constant_time` / `_siv` | 2 + 2 | dudect harnesses for the GCM and SIV decrypt paths, **CI-gated** (`constant-time` job, best-of-3, `\|t\| < 25`) |
+| `proofs/saw/` (`saw` CI job) | 2 | **SAW** (Galois) verifies rustc's **LLVM bitcode** of `increment_counter`/`j0` against a Cryptol spec - a third independent prover (own solvers) |
+| `proofs/crux-mir/` (`crux-mir` CI job) | 1 | **crux-mir** (Galois) proves `increment_counter` == `inc_32` over the **Rust MIR** - a fourth independent toolchain; a probe documents the unmodeled-intrinsic boundary |
+| `proofs/fstar/` (`fstar` CI job) | 1 | **F\*** (via hax) proves `j0`/`increment_counter` over source **extracted from the real Rust**, with a drift guard; runs in a prebuilt GHCR image and gates every PR + release |
+| `proofs/constant-time/verify.sh` (`constant-time` job) | 2 + control | **binary branch-freedom**: the two scalar secret ops disassembled and required branch-free over secret inputs, x86_64 **and** aarch64, with a non-vacuity control |
 
-This resolves the Wycheproof and formal-proof gap (HRC-2026-08) for both modes
-and the parser property/fuzz gap. The Miri/sanitizer gap (HRC-2026-04) is
-substantially addressed: CI runs full-lifecycle Miri over the AES-256-GCM/SIV
-paths on x86 plus Valgrind/ASan/TSan, and the `formal-proof` job runs the
-`proofs/` suite. The remaining gap is independent third-party review / CAVP
-accreditation (HRC-2026-09).
+The counter-increment property is now confirmed by **five independent engines**
+(Z3, Kani/CBMC, SAW-LLVM, crux-mir, F\*); SAW and crux-mir also established the
+negative result that no source/bitcode tool reaches *through* the SIMD
+carryless-multiply, which is why the field arithmetic is proven against a model
+anchored to real captured output. This resolves the Wycheproof and formal-proof
+gap (HRC-2026-08) for both modes and the parser property/fuzz gap. The
+Miri/sanitizer gap (HRC-2026-04) is substantially addressed: CI runs
+full-lifecycle Miri over the AES-256-GCM/SIV paths on x86 plus Valgrind/ASan/TSan
+**on both x86_64 and Linux arm64**, and the proof jobs run the full suite. The
+whole battery (~23 checks across five platforms) is **required to merge**. The
+remaining gap is independent third-party review / CAVP accreditation
+(HRC-2026-09).
 
 ---
 
@@ -1120,11 +1140,11 @@ review and differential/known-answer testing; **not** accredited validation.
 | Nonce reuse by integrator | Medium | Critical | Random nonce generator; (recommended) docs | HRC-2026-01 - not enforced |
 | Per-key invocation limit exceeded | Low-Med | High | None enforced | HRC-2026-01 - caller duty |
 | Malicious CPU RNG + prior state leak | Low | High | OS-rooted seed + blend + stuck screen | HRC-2026-02 |
-| Compiler reintroduces secret branch | Low | High | `subtle` + `black_box`; asm-checked | HRC-2026-05 |
-| Latent `unsafe` UB | Low | Critical | Review + differential corpus + full-lifecycle Miri (x86) + Valgrind/ASan/TSan in CI | HRC-2026-04 - substantially addressed |
+| Compiler reintroduces secret branch | Low | High | `subtle` + `black_box`; **binary branch-freedom CI-gated on x86_64 + aarch64** (+ dudect) | HRC-2026-05 |
+| Latent `unsafe` UB | Low | Critical | Review + differential corpus + full-lifecycle Miri (x86) + Valgrind/ASan/TSan in CI **on x86_64 + Linux arm64** | HRC-2026-04 - substantially addressed |
 | Transient-execution leak of cache tier | Low-Med | High | Out of scope by design | Documented limitation |
 | Upstream vuln in vendored code | Low | Medium | Copied + attributed | Manual re-sync needed |
-| Aggregated-GHASH/POLYVAL latent defect | Low | High | Boundary-dense differential corpus + Project Wycheproof vectors (GCM and SIV) + machine-checked field-core proofs (all inputs) | HRC-2026-08 - resolved |
+| Aggregated-GHASH/POLYVAL latent defect | Low | High | Boundary-dense differential corpus + Project Wycheproof vectors (GCM and SIV) + machine-checked field-core proofs (all inputs); composition increment/J0 proven by five engines (Z3, Kani, SAW, crux-mir, F\*) | HRC-2026-08 - resolved |
 
 ---
 
@@ -1227,7 +1247,15 @@ cargo run --example assert_hardware
 cargo run --release --example state_size
 cargo asm -p hardware-rust-crypto --lib 'hardware_rust_crypto::aes_gcm::KeyState::init_in_place'
 cargo tree -p hardware-rust-crypto -e normal --prefix none
-cargo tree -p hardware-rust-crypto  -e normal --prefix none
+
+# Machine-checked proofs (each is also its own CI workflow):
+./proofs/run_all.sh                          # Z3/sympy: field core + composition, all inputs
+cargo kani                                   # Kani/CBMC over the compiled Rust
+./proofs/constant-time/verify.sh             # binary branch-freedom (x86_64 + aarch64)
+./proofs/saw/run.sh                          # SAW over the LLVM bitcode
+./proofs/crux-mir/run.sh                     # crux-mir over the Rust MIR
+./proofs/fstar/check.sh                      # F* over hax-extracted source (drift-guarded)
+cargo +nightly miri test --lib aes_gcm       # Miri UB checker (x86)
 ```
 
 ### B.2 Test results (captured)

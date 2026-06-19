@@ -156,8 +156,11 @@ certification. A bounded |t| is consistent with - not proof of - constant
 time; a large, sample-growing, consistent-sign |t| is a signal to
 investigate.
 
-The harness is intentionally **not** wired into CI: shared CI runners are too
-noisy for a ~200 ns-scale timing measurement, and a flaky timing gate would be
-worse than none. The deterministic CI-friendly check is the assembly
-inspection in section 1; the dudect harness is a manual tool to run on a quiet
-machine when the secret-handling code or the compiler changes.
+The harness is now **CI-gated** in the `constant-time` job (on both x86_64 and
+aarch64), and **fails the build if Welch `|t| ≥ 25`**. To survive shared-runner
+jitter without flaking, each test takes the best of three batches and exits on the
+first passing batch - a real early-exit leak holds `|t|` in the hundreds across
+*every* batch (~267 measured), three orders of magnitude above the ~0.4-2.4 that
+constant-time code produces, so the gate separates the two cleanly. It
+corroborates, but is secondary to, the deterministic binary branch-freedom check
+(section 1), which is the primary CI guarantee.
