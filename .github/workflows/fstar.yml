@@ -5,11 +5,13 @@ name: F* / hax extraction proof
 # functional-correctness proof of j0 / increment_counter. A drift guard re-runs
 # the extraction and fails if the proved bodies no longer match the shipped code.
 #
-# Manual-only and the heaviest bring-up here: it builds the hax toolchain (Rust +
-# OCaml engines), F*, and Z3 from scratch. See proofs/hax/README.md,
-# proofs/hax/extract.sh and proofs/fstar/check.sh.
+# The heaviest bring-up here: it builds the hax toolchain (Rust + OCaml engines).
+# F* itself is pulled as a prebuilt binary (which bundles its own z3), and the hax
+# Rust binaries are cached, so a warm run is ~10 min. Dispatch-only + release gate
+# (see publish.yml). See proofs/hax/README.md, extract.sh and check.sh.
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -17,13 +19,18 @@ permissions:
 jobs:
   fstar:
     name: F* proof over hax-extracted composition
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    # setup-ocaml@v3 creates a directory-local opam switch at the workspace root.
-    # Pin OPAMSWITCH to it so `opam install`/`opam env` resolve the same switch
-    # from any cwd - the hax engine builds from its checkout dir and check.sh runs
-    # from proofs/fstar/, neither of which carries the _opam local switch.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     env:
+      # Pinned hax revision known-good against the committed HrcComposition.fst
+      # and the hax proof-libs; also the cache key below.
+      HAX_REV: a914ac7
+      # Prebuilt F* (bundles z3); fstar.exe lands at <pkg>/fstar/bin.
+      FSTAR_VERSION: v2026.03.24
+      # setup-ocaml@v3 creates a directory-local opam switch at the workspace root.
+      # Pin OPAMSWITCH to it so `opam install`/`opam env` resolve the same switch
+      # from any cwd - the hax engine builds from its checkout dir and check.sh runs
+      # from proofs/fstar/, neither of which carries the _opam local switch.
       OPAMSWITCH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -36,7 +43,8 @@ jobs:
           components: rustc-dev, llvm-tools-preview, rust-src, rustfmt
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      # OCaml/opam toolchain for the hax OCaml engine and for F*.
+      # OCaml/opam toolchain for the hax OCaml engine (the Rust engine delegates
+      # some phases to it). F* no longer comes from opam - see prebuilt step below.
       - name: Set up OCaml + opam
         uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3
         with:
@@ -46,48 +54,51 @@ jobs:
         with:
           node-version: "20"
 
-      # F* resolves its solver by version: this build defaults to z3 4.8.5 and the
-      # opam package does not bundle it, so put BOTH z3-4.8.5 and z3-4.13.3 on PATH
-      # (exactly what F*'s post-install message asks for) and default `z3` to 4.8.5.
-      - name: Install Z3 4.8.5 + 4.13.3 (F* solvers)
+      # Prebuilt F* binary - bundles its own z3, so no z3 install or version
+      # juggling is needed (the from-source opam build took ~25 min).
+      - name: Install prebuilt F* ${{ env.FSTAR_VERSION }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/z3bin"
-          curl -fSL --retry 3 -o z3-13.zip \
-            https://github.com/Z3Prover/z3/releases/download/z3-4.13.3/z3-4.13.3-x64-glibc-2.35.zip
-          unzip -q z3-13.zip -d "$HOME/z3-13"
-          cp "$(ls "$HOME"/z3-13/z3-*/bin/z3)" "$HOME/z3bin/z3-4.13.3"
-          # The 4.8.5 release tag is capital-Z 'Z3-4.8.5'.
-          curl -fSL --retry 3 -o z3-8.zip \
-            https://github.com/Z3Prover/z3/releases/download/Z3-4.8.5/z3-4.8.5-x64-ubuntu-16.04.zip
-          unzip -q z3-8.zip -d "$HOME/z3-8"
-          cp "$(ls "$HOME"/z3-8/z3-*/bin/z3)" "$HOME/z3bin/z3-4.8.5"
-          ln -sf "$HOME/z3bin/z3-4.8.5" "$HOME/z3bin/z3"
-          chmod +x "$HOME/z3bin/"*
-          echo "$HOME/z3bin" >> "$GITHUB_PATH"
-      - name: Z3 versions
-        run: |
-          z3-4.8.5 --version
-          z3-4.13.3 --version
+          url="https://github.com/FStarLang/FStar/releases/download/${FSTAR_VERSION}/fstar-${FSTAR_VERSION}-Linux-x86_64.tar.gz"
+          echo "asset: $url"
+          curl -fSL --retry 3 -o fstar.tar.gz "$url"
+          mkdir -p "$HOME/fstarpkg"
+          tar xzf fstar.tar.gz -C "$HOME/fstarpkg"
+          echo "$HOME/fstarpkg/fstar/bin" >> "$GITHUB_PATH"
+      - name: F* version
+        run: fstar.exe --version
 
-      # Build the hax frontend + drivers against the pinned nightly. The git
-      # install lands a checkout under ~/.cargo/git/checkouts/hax-*/ which carries
-      # the driver, rust-engine and engine/ sources extract.sh/check.sh reference.
-      - name: Build hax (frontend + Rust engine + codegen)
+      # The hax Rust binaries + their source checkout, cached by the pinned rev.
+      # Installed to a dedicated --root so the cache never clobbers rustup proxies.
+      - name: Cache hax toolchain
+        id: cache-hax
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/hax-tools
+            ~/.cargo/git
+          key: hax-${{ env.HAX_REV }}-nightly-2025-11-08-ubuntu-24.04
+      - name: Build hax (frontend + Rust engine + codegen) (cache miss)
+        if: steps.cache-hax.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          cargo install --git https://github.com/hacspec/hax cargo-hax
+          cargo install --git https://github.com/hacspec/hax --rev "${HAX_REV}" cargo-hax --root "$HOME/hax-tools"
+          HAX=$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)
+          cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"          --root "$HOME/hax-tools"
+          cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"         --root "$HOME/hax-tools"
+          cargo +nightly-2025-11-08 install --path "$HAX/engine/names/extract" --root "$HOME/hax-tools"
+      - name: Locate hax checkout + put hax on PATH
+        run: |
+          set -euo pipefail
           HAX=$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)
           echo "HAX=$HAX" >> "$GITHUB_ENV"
-          cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"
-          cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"
-          cargo +nightly-2025-11-08 install --path "$HAX/engine/names/extract"
+          echo "$HOME/hax-tools/bin" >> "$GITHUB_PATH"
 
-      - name: Build the hax OCaml engine and install F*
+      # Build only the hax OCaml engine into the opam switch (F* is the prebuilt).
+      - name: Build the hax OCaml engine
         run: |
           set -euo pipefail
           eval "$(opam env)"
-          opam install -y fstar
           (cd "$HAX/engine" && opam install . -y --confirm-level=unsafe-yes --assume-depexts)
 
       # Re-extracts with hax, drift-checks the proved bodies against the fresh
