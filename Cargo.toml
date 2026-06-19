@@ -1,10 +1,10 @@
 [package]
 name = "hardware-rust-crypto"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
-description = "Hardware-only AES-256-GCM and AES-256-CTR key/nonce generation (AES-NI/PCLMULQDQ, ARMv8 AES/PMULL) with compact, caller-placeable, zeroized key state."
+description = "Hardware-only AES-256-GCM and AES-256-GCM-SIV AEAD plus AES-256-CTR key/nonce generation (AES-NI/PCLMULQDQ, ARMv8 AES/PMULL), with compact, caller-placeable, zeroized key state."
 repository = "https://github.com/godaddy/hardware-rust-crypto"
 readme = "README.md"
 keywords = ["aes-gcm", "aes", "aead", "encryption", "hardware"]
