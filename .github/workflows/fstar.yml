@@ -9,14 +9,22 @@ name: F* / hax extraction proof
 # by proof-image.yml), so there is no from-source toolchain build or network fetch
 # at run time - the gate is deterministic and fast (~2 min). To advance a pinned
 # tool, bump the Dockerfile + IMAGE_TAG + the container ref below, on purpose.
-# Dispatch-only + release gate (see publish.yml).
+# Runs on every push/PR (fast and deterministic in the image), as a release gate
+# (see publish.yml), and on demand.
 on:
   workflow_dispatch:
   workflow_call:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
   packages: read
+
+concurrency:
+  group: fstar-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fstar:
