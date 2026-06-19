@@ -46,17 +46,29 @@ jobs:
         with:
           node-version: "20"
 
-      # Z3 4.13.3 on PATH (F*'s solver), exposed under both names check.sh/F* use.
-      - name: Install Z3 4.13.3
+      # F* resolves its solver by version: this build defaults to z3 4.8.5 and the
+      # opam package does not bundle it, so put BOTH z3-4.8.5 and z3-4.13.3 on PATH
+      # (exactly what F*'s post-install message asks for) and default `z3` to 4.8.5.
+      - name: Install Z3 4.8.5 + 4.13.3 (F* solvers)
         run: |
           set -euo pipefail
-          curl -fsSL -o z3.zip \
+          mkdir -p "$HOME/z3bin"
+          curl -fSL --retry 3 -o z3-13.zip \
             https://github.com/Z3Prover/z3/releases/download/z3-4.13.3/z3-4.13.3-x64-glibc-2.35.zip
-          unzip -q z3.zip -d "$HOME/z3"
-          d=$(ls -d "$HOME"/z3/z3-* | head -1)
-          ln -sf "$d/bin/z3" "$d/bin/z3-4.13.3"
-          echo "$d/bin" >> "$GITHUB_PATH"
-      - run: z3 --version
+          unzip -q z3-13.zip -d "$HOME/z3-13"
+          cp "$(ls "$HOME"/z3-13/z3-*/bin/z3)" "$HOME/z3bin/z3-4.13.3"
+          # The 4.8.5 release tag is capital-Z 'Z3-4.8.5'.
+          curl -fSL --retry 3 -o z3-8.zip \
+            https://github.com/Z3Prover/z3/releases/download/Z3-4.8.5/z3-4.8.5-x64-ubuntu-16.04.zip
+          unzip -q z3-8.zip -d "$HOME/z3-8"
+          cp "$(ls "$HOME"/z3-8/z3-*/bin/z3)" "$HOME/z3bin/z3-4.8.5"
+          ln -sf "$HOME/z3bin/z3-4.8.5" "$HOME/z3bin/z3"
+          chmod +x "$HOME/z3bin/"*
+          echo "$HOME/z3bin" >> "$GITHUB_PATH"
+      - name: Z3 versions
+        run: |
+          z3-4.8.5 --version
+          z3-4.13.3 --version
 
       # Build the hax frontend + drivers against the pinned nightly. The git
       # install lands a checkout under ~/.cargo/git/checkouts/hax-*/ which carries
