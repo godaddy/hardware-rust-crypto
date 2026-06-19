@@ -25,7 +25,7 @@ ENV RUSTUP_HOME=/opt/rustup \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git unzip xz-utils \
       build-essential pkg-config m4 \
-      opam nodejs \
+      opam nodejs rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Rust nightly that hax links against (rustc internals) -------------------
