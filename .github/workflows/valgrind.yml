@@ -1,8 +1,9 @@
 name: Valgrind memcheck
 
-# Valgrind memchecks the real x86_64 AES-NI/PCLMULQDQ binaries (the hardware
-# path Miri cannot execute). Runs on every push/PR and is individually runnable.
-# The full-suite (every test binary) variant lives in heavy-assurance.yml.
+# Valgrind memchecks the real AES-NI/PCLMULQDQ (x86_64) and ARMv8 AES/PMULL
+# (aarch64) binaries - the hardware paths Miri cannot execute - on Linux runners
+# of both architectures. Runs on every push/PR and is individually runnable. The
+# full-suite (every test binary) variant lives in heavy-assurance.yml.
 on:
   workflow_dispatch:
   push:
@@ -18,8 +19,16 @@ concurrency:
 
 jobs:
   valgrind:
-    name: valgrind memcheck (intrinsic binary)
-    runs-on: ubuntu-latest
+    name: valgrind memcheck ${{ matrix.arch }} (intrinsic binary)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-11
