@@ -5,111 +5,33 @@ name: F* / hax extraction proof
 # functional-correctness proof of j0 / increment_counter. A drift guard re-runs
 # the extraction and fails if the proved bodies no longer match the shipped code.
 #
-# The heaviest bring-up here: it builds the hax toolchain (Rust + OCaml engines).
-# F* itself is pulled as a prebuilt binary (which bundles its own z3), and the hax
-# Rust binaries are cached, so a warm run is ~10 min. Dispatch-only + release gate
-# (see publish.yml). See proofs/hax/README.md, extract.sh and check.sh.
+# Runs INSIDE the pinned proof image (.github/docker/fstar-proof.Dockerfile, built
+# by proof-image.yml), so there is no from-source toolchain build or network fetch
+# at run time - the gate is deterministic and fast (~2 min). To advance a pinned
+# tool, bump the Dockerfile + IMAGE_TAG + the container ref below, on purpose.
+# Dispatch-only + release gate (see publish.yml).
 on:
   workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   fstar:
     name: F* proof over hax-extracted composition
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      # Pinned hax revision known-good against the committed HrcComposition.fst
-      # and the hax proof-libs; also the cache key below.
-      HAX_REV: a914ac7
-      # Prebuilt F* (bundles z3); fstar.exe lands at <pkg>/fstar/bin.
-      FSTAR_VERSION: v2026.03.24
-      # setup-ocaml@v3 creates a directory-local opam switch at the workspace root.
-      # Pin OPAMSWITCH to it so `opam install`/`opam env` resolve the same switch
-      # from any cwd - the hax engine builds from its checkout dir and check.sh runs
-      # from proofs/fstar/, neither of which carries the _opam local switch.
-      OPAMSWITCH: ${{ github.workspace }}
+    container:
+      image: ghcr.io/godaddy/hardware-rust-crypto/fstar-proof:hax-a914ac7-fstar-v2026.03.24
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      # hax's frontend links against the compiler internals of its pinned nightly.
-      - name: Install hax's pinned nightly (nightly-2025-11-08)
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly
-        with:
-          toolchain: nightly-2025-11-08
-          components: rustc-dev, llvm-tools-preview, rust-src, rustfmt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-
-      # OCaml/opam toolchain for the hax OCaml engine (the Rust engine delegates
-      # some phases to it). F* no longer comes from opam - see prebuilt step below.
-      - name: Set up OCaml + opam
-        uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3
-        with:
-          ocaml-compiler: "5.2"
-      - name: Install Node (hax engine codegen)
-        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4
-        with:
-          node-version: "20"
-
-      # Prebuilt F* binary - bundles its own z3, so no z3 install or version
-      # juggling is needed (the from-source opam build took ~25 min).
-      - name: Install prebuilt F* ${{ env.FSTAR_VERSION }}
-        run: |
-          set -euo pipefail
-          url="https://github.com/FStarLang/FStar/releases/download/${FSTAR_VERSION}/fstar-${FSTAR_VERSION}-Linux-x86_64.tar.gz"
-          echo "asset: $url"
-          curl -fSL --retry 3 -o fstar.tar.gz "$url"
-          mkdir -p "$HOME/fstarpkg"
-          tar xzf fstar.tar.gz -C "$HOME/fstarpkg"
-          echo "$HOME/fstarpkg/fstar/bin" >> "$GITHUB_PATH"
-      - name: F* version
-        run: fstar.exe --version
-
-      # The hax Rust binaries + their source checkout, cached by the pinned rev.
-      # Installed to a dedicated --root so the cache never clobbers rustup proxies.
-      - name: Cache hax toolchain
-        id: cache-hax
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/hax-tools
-            ~/.cargo/git
-          key: hax-${{ env.HAX_REV }}-nightly-2025-11-08-ubuntu-24.04
-      - name: Build hax (frontend + Rust engine + codegen) (cache miss)
-        if: steps.cache-hax.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          cargo install --git https://github.com/hacspec/hax --rev "${HAX_REV}" cargo-hax --root "$HOME/hax-tools"
-          # The names/extract build script shells out to `cargo-hax`, so it must be
-          # on PATH before that crate builds (the default ~/.cargo/bin root would be
-          # on PATH automatically; a custom --root is not).
-          export PATH="$HOME/hax-tools/bin:$PATH"
-          HAX=$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)
-          cargo +nightly-2025-11-08 install --path "$HAX/cli/driver"          --root "$HOME/hax-tools"
-          cargo +nightly-2025-11-08 install --path "$HAX/rust-engine"         --root "$HOME/hax-tools"
-          cargo +nightly-2025-11-08 install --path "$HAX/engine/names/extract" --root "$HOME/hax-tools"
-      - name: Locate hax checkout + put hax on PATH
-        run: |
-          set -euo pipefail
-          HAX=$(ls -d "$HOME"/.cargo/git/checkouts/hax-*/*/ | head -1)
-          echo "HAX=$HAX" >> "$GITHUB_ENV"
-          echo "$HOME/hax-tools/bin" >> "$GITHUB_PATH"
-
-      # Build only the hax OCaml engine into the opam switch (F* is the prebuilt).
-      - name: Build the hax OCaml engine
-        run: |
-          set -euo pipefail
-          eval "$(opam env)"
-          (cd "$HAX/engine" && opam install . -y --confirm-level=unsafe-yes --assume-depexts)
-
-      # Re-extracts with hax, drift-checks the proved bodies against the fresh
-      # extraction, then runs F* on HrcComposition.fst (non-zero on any unproved
-      # obligation).
+      # The image bakes the pinned hax + F* toolchain and the env (PATH, OPAMROOT,
+      # HAX). Re-extracts with hax, drift-checks the proved bodies against the
+      # fresh extraction, then runs F* on HrcComposition.fst (non-zero on any
+      # unproved obligation).
       - name: Verify the F* proof (with drift guard)
-        run: |
-          set -euo pipefail
-          eval "$(opam env)"
-          ./proofs/fstar/check.sh
+        run: ./proofs/fstar/check.sh
