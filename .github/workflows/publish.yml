@@ -6,8 +6,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+# `packages: read` is required at the caller level so the reusable F* workflow can
+# pull its prebuilt toolchain image from GHCR - a reusable workflow cannot be
+# granted more permission than its caller, so omitting it fails the run at startup.
 permissions:
   contents: read
+  packages: read
 
 jobs:
   # Release gate: the long-running F* source-level proof runs here rather than on
