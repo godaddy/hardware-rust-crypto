@@ -11,7 +11,7 @@ and pull request.
 | **Z3/sympy proofs** | `proofs-z3.yml` | push + PR | `proofs/run_all.sh` — field multiply == POLYVAL, reductions linear, Horner == sum-of-powers, GHASH mapping, and the intrinsic-free AEAD composition == SP 800-38D / RFC 8452, over all inputs. |
 | **Kani model checking** | `kani.yml` | push + PR | CBMC over the actual compiled Rust: counter increments, J0 layout, length validation, nonce parser, envelope splitters. |
 | **SAW (LLVM bitcode proof)** | `saw.yml` | push + PR | SAW verifies rustc's LLVM bitcode against a Cryptol spec (`saw_increment_counter` == inc_32, `saw_j0` == J0). Third independent prover. Bundle cached → ~1 min. |
-| **crux-mir (Rust MIR proof)** | `crux-mir.yml` | push + PR | crux-mir proves `increment_counter` == inc_32 over Rust MIR (fourth toolchain); `clmul_probe` documents the unmodeled-intrinsic boundary. mir-json cached → ~1 min warm (~7 min cold). |
+| **crux-mir (Rust MIR proof)** | `crux-mir.yml` | push + PR | crux-mir proves `increment_counter` == inc_32 over Rust MIR (fourth toolchain); `clmul_probe` documents the unmodeled-intrinsic boundary. mir-json binaries cached → ~2 min warm (~7 min cold; the stdlib MIR is regenerated each run). |
 | **F\* / hax extraction proof** | `fstar.yml` | manual + **release gate** | Extracts the composition from real Rust to F\* with hax, drift-checks it, and verifies `HrcComposition.fst`. Heaviest (~10 min warm); runs as a `publish.yml` gate, not on every PR. |
 | **Constant-time** | `constant-time.yml` | push + PR | Binary-level branch-freedom (disassembly) of the secret-handling functions + dudect Welch t-tests on both decrypt paths. |
 | **Miri (UB checker)** | `miri.yml` | push + PR | Runs the aes_gcm key-state lifecycle + real AES/GHASH (x86 intrinsics) under Miri's UB checker. |
@@ -26,8 +26,12 @@ and pull request.
 ## Tiering & speed
 
 - **On every push/PR:** the cross-platform gate plus all the proofs/checks that
-  finish in ~minutes — including **SAW** and **crux-mir**, whose toolchains are
-  cached (`actions/cache`, keyed on the pinned versions) so warm runs are ~1 min.
+  finish in ~minutes — including **SAW** (~20 s warm) and **crux-mir** (~2 min
+  warm), whose toolchains are cached (`actions/cache`, keyed on the pinned
+  versions). Caches are scoped by ref: a PR reads caches from the base branch, so
+  the warm path engages once these have run on `main`. crux-mir caches only the
+  mir-json binaries — the translated stdlib MIR is regenerated each run (~1 min)
+  because those artifacts don't survive cache transport to a fresh runner.
 - **F\*** is the one wildly-long proof. It runs on **manual dispatch** and as a
   **release gate** in `publish.yml` (a tagged release can't publish unless it
   verifies). F\* is pulled as a prebuilt binary (bundles its own z3) and the hax
