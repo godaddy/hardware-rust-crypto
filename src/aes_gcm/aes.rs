@@ -282,6 +282,10 @@ mod imp {
     }
 
     pub(super) fn hardware_available() -> bool {
+        // A statically-enabled target feature is guaranteed present at runtime.
+        if cfg!(target_feature = "aes") && cfg!(target_feature = "neon") {
+            return true;
+        }
         std::arch::is_aarch64_feature_detected!("aes")
             && std::arch::is_aarch64_feature_detected!("neon")
     }
@@ -489,7 +493,50 @@ mod imp {
     }
 
     pub(super) fn hardware_available() -> bool {
-        std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("sse2")
+        // A statically-enabled target feature is guaranteed present at runtime
+        // (the compiler emits those instructions unconditionally), so trust it
+        // without any runtime query.
+        if cfg!(target_feature = "aes") && cfg!(target_feature = "sse2") {
+            return true;
+        }
+        // A *positive* `is_x86_feature_detected!` result is authoritative, so the
+        // common path is unchanged. Only when it reports the feature *absent* do
+        // we double-check CPUID: rebuilding `std_detect` from source
+        // (`cargo -Zbuild-std`, used by the sanitizer CI) has been observed to
+        // produce false negatives on CPUs that do support AES.
+        if std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("sse2")
+        {
+            return true;
+        }
+        cpuid_confirms_aes_sse2()
+    }
+
+    // Miri models `is_x86_feature_detected!` but cannot execute a raw `CPUID`, so
+    // trust the negative result it just produced.
+    #[cfg(miri)]
+    fn cpuid_confirms_aes_sse2() -> bool {
+        false
+    }
+
+    // CPUID leaf 1 is the architectural source of truth and is always available
+    // on x86/x86-64, unaffected by `-Zbuild-std`. `#[cold]`/`#[inline(never)]`
+    // keep this fallback out of the common-path code layout. `__cpuid` is a safe
+    // intrinsic on x86-64 but `unsafe` on 32-bit x86, so the block is unused on
+    // the former.
+    #[cfg(not(miri))]
+    #[cold]
+    #[inline(never)]
+    #[allow(unused_unsafe)]
+    fn cpuid_confirms_aes_sse2() -> bool {
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::__cpuid;
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::__cpuid;
+        const ECX_AES: u32 = 1 << 25;
+        const EDX_SSE2: u32 = 1 << 26;
+        // SAFETY: CPUID leaf 1 is unconditionally valid on x86/x86-64.
+        let info = unsafe { __cpuid(1) };
+        (info.ecx & ECX_AES) != 0 && (info.edx & EDX_SSE2) != 0
     }
 
     // Under Miri only, expand the key with the portable software schedule
