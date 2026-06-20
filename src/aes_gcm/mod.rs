@@ -453,6 +453,98 @@ impl KeyState {
         Ok(ciphertext.len())
     }
 
+    /// Detached seal: encrypt `plaintext` under a caller-supplied `nonce` and
+    /// `aad`, returning `(ciphertext, tag)` separately with no nonce appended.
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    fn seal_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, [u8; TAG_SIZE]), Error> {
+        let nonce = nonce_from_slice(nonce)?;
+        validate_gcm_lengths(aad.len(), plaintext.len())?;
+        let mut ciphertext = vec![0_u8; plaintext.len()];
+        let Some(tag) = self.seal(&nonce, aad, plaintext, &mut ciphertext) else {
+            ciphertext.zeroize();
+            return Err(Error::Encrypt);
+        };
+        Ok((ciphertext, tag))
+    }
+
+    /// In-place detached seal: `data` enters as plaintext and exits as
+    /// ciphertext; the authentication tag is returned. No nonce is appended.
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    fn seal_in_place_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        data: &mut [u8],
+    ) -> Result<[u8; TAG_SIZE], Error> {
+        let nonce = nonce_from_slice(nonce)?;
+        validate_gcm_lengths(aad.len(), data.len())?;
+        let Some(tag) = self.seal_in_place(&nonce, aad, data) else {
+            data.zeroize();
+            return Err(Error::Encrypt);
+        };
+        Ok(tag)
+    }
+
+    /// Detached open: authenticate `ciphertext` against the supplied `tag`
+    /// (constant time) under `nonce`/`aad` and return the plaintext. The
+    /// transient plaintext is zeroized on authentication failure.
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    fn open_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let nonce = nonce_from_slice(nonce)?;
+        if tag.len() != TAG_SIZE {
+            return Err(Error::Decrypt);
+        }
+        validate_gcm_lengths(aad.len(), ciphertext.len())?;
+        let mut out = vec![0_u8; ciphertext.len()];
+        let Some(expected) = self.open(&nonce, aad, ciphertext, &mut out) else {
+            out.zeroize();
+            return Err(Error::Decrypt);
+        };
+        if !constant_time_eq(&expected, tag) {
+            out.zeroize();
+            return Err(Error::Decrypt);
+        }
+        Ok(out)
+    }
+
+    /// In-place detached open: `data` enters as ciphertext and exits as
+    /// plaintext once authenticated against `tag` (constant time). On
+    /// authentication failure `data` is zeroized and `Err` returned.
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    fn open_in_place_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        data: &mut [u8],
+        tag: &[u8],
+    ) -> Result<(), Error> {
+        let nonce = nonce_from_slice(nonce)?;
+        if tag.len() != TAG_SIZE {
+            return Err(Error::Decrypt);
+        }
+        validate_gcm_lengths(aad.len(), data.len())?;
+        let Some(expected) = self.open_in_place(&nonce, aad, data) else {
+            data.zeroize();
+            return Err(Error::Decrypt);
+        };
+        if !constant_time_eq(&expected, tag) {
+            data.zeroize();
+            return Err(Error::Decrypt);
+        }
+        Ok(())
+    }
+
     /// Fused authenticate-and-decrypt: bulk ciphertext chunks feed GHASH while
     /// their CTR plaintext is written to the caller's buffer. The caller must
     /// zeroize `plaintext` if the returned tag does not match the supplied tag.
@@ -1109,6 +1201,96 @@ impl HardwareAes256GcmKeyState {
     #[doc(hidden)]
     pub fn decrypt_nonce_appended(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
         self.state_ref().decrypt_envelope(&[], data)
+    }
+
+    /// Detached AES-256-GCM seal with a caller-supplied nonce and AAD.
+    ///
+    /// Returns `(ciphertext, tag)` separately and does **not** append the
+    /// nonce — the caller owns nonce construction, AAD, and output framing.
+    /// This is the protocol-neutral primitive a record layer (for example a
+    /// rustls AEAD provider) or a standards known-answer test needs.
+    ///
+    /// The caller is responsible for nonce uniqueness under the key. For
+    /// general use prefer [`Self::encrypt`], which generates a proven
+    /// non-repeating nonce internally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
+    /// [`Error::Encrypt`].
+    #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn seal_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, [u8; TAG_SIZE]), Error> {
+        self.state_ref().seal_detached(nonce, aad, plaintext)
+    }
+
+    /// In-place detached seal: `data` enters as plaintext and exits as
+    /// ciphertext of equal length; the authentication tag is returned. No
+    /// nonce is appended. See [`Self::seal_detached`] for semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
+    /// [`Error::Encrypt`] (the buffer is zeroized before an `Encrypt` error).
+    #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn seal_in_place_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        data: &mut [u8],
+    ) -> Result<[u8; TAG_SIZE], Error> {
+        self.state_ref().seal_in_place_detached(nonce, aad, data)
+    }
+
+    /// Detached open: authenticate `ciphertext` against `tag` (constant time)
+    /// under the caller-supplied `nonce`/`aad` and return the plaintext.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
+    /// [`Error::Decrypt`] if authentication fails (the transient plaintext is
+    /// zeroized first).
+    #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn open_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.state_ref().open_detached(nonce, aad, ciphertext, tag)
+    }
+
+    /// In-place detached open: `data` enters as ciphertext and exits as
+    /// plaintext once authenticated against `tag` (constant time). On
+    /// authentication failure `data` is zeroized and `Err` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidNonceLength`], [`Error::InputTooLarge`], or
+    /// [`Error::Decrypt`] if authentication fails.
+    #[inline]
+    #[cfg(any(test, feature = "hazmat-explicit-nonce"))]
+    #[doc(hidden)]
+    pub fn open_in_place_detached(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        data: &mut [u8],
+        tag: &[u8],
+    ) -> Result<(), Error> {
+        self.state_ref()
+            .open_in_place_detached(nonce, aad, data, tag)
     }
 
     fn next_nonce(&mut self) -> Result<[u8; NONCE_SIZE], Error> {
@@ -2224,6 +2406,100 @@ mod tests {
         let err = UninitKeyStateSlot::new(&mut misaligned.0[start..end])
             .expect_err("misaligned storage should fail");
         assert_eq!(err, Error::KeyStateStorageMisaligned);
+    }
+
+    fn hx(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn detached_round_trips_and_matches_nonce_appended_path() {
+        const KEY: [u8; 32] = [0x5b; 32];
+        const NONCE: [u8; NONCE_SIZE] = [0x42; NONCE_SIZE];
+        let key = HardwareAes256GcmKeyState::new(&KEY).expect("valid key");
+        let pt = b"detached seal/open round-trip payload".to_vec();
+        let aad = b"associated-data".as_slice();
+
+        // Allocating detached seal/open with AAD.
+        let (ct, tag) = key.seal_detached(&NONCE, aad, &pt).expect("seal_detached");
+        assert_eq!(ct.len(), pt.len(), "ciphertext is plaintext-length");
+        assert_eq!(key.open_detached(&NONCE, aad, &ct, &tag).unwrap(), pt);
+
+        // In-place detached seal/open must agree with the allocating variant.
+        let mut buf = pt.clone();
+        let tag2 = key
+            .seal_in_place_detached(&NONCE, aad, &mut buf)
+            .expect("seal_in_place_detached");
+        assert_eq!(buf, ct, "in-place ciphertext matches allocating");
+        assert_eq!(tag2, tag, "in-place tag matches allocating");
+        key.open_in_place_detached(&NONCE, aad, &mut buf, &tag2)
+            .expect("open_in_place_detached");
+        assert_eq!(buf, pt, "in-place open recovers plaintext");
+
+        // Detached output (empty AAD) must equal the validated nonce-appended
+        // envelope minus its trailing nonce — ties the new primitive to the
+        // existing explicit-nonce path byte-for-byte.
+        let env = key.encrypt_nonce_appended(&NONCE, &pt).expect("appended");
+        let (ct0, tag0) = key.seal_detached(&NONCE, &[], &pt).expect("seal_detached");
+        let mut joined = ct0;
+        joined.extend_from_slice(&tag0);
+        assert_eq!(joined, env[..env.len() - NONCE_SIZE]);
+    }
+
+    #[test]
+    fn detached_seal_reproduces_nist_vector() {
+        // NIST CAVP AES-256-GCM, AADlen=0, Taglen=128. The detached, explicit-
+        // nonce path must reproduce a published (key, nonce, pt) -> (ct, tag)
+        // vector exactly — the core reason this primitive exists.
+        let key = HardwareAes256GcmKeyState::new(&hx(
+            "31bdadd96698c204aa9ce1448ea94ae1fb4a9a0b3c9d773b51bb1822666b8f22",
+        ))
+        .expect("valid key");
+        let nonce = hx("0d18e06c7c725ac9e362e1ce");
+        let pt = hx("2db5168e932556f8089a0622981d017d");
+        let (ct, tag) = key.seal_detached(&nonce, &[], &pt).expect("seal_detached");
+        assert_eq!(ct, hx("fa4362189661d163fcd6a56d8bf0405a"));
+        assert_eq!(tag.as_slice(), hx("d636ac1bbedd5cc3ee727dc2ab4a9489"));
+        // And the open side authenticates the same vector.
+        assert_eq!(key.open_detached(&nonce, &[], &ct, &tag).unwrap(), pt);
+    }
+
+    #[test]
+    fn detached_open_rejects_wrong_tag_and_aad() {
+        const KEY: [u8; 32] = [0x11; 32];
+        const NONCE: [u8; NONCE_SIZE] = [0x22; NONCE_SIZE];
+        let key = HardwareAes256GcmKeyState::new(&KEY).expect("valid key");
+        let pt = b"authenticate me".to_vec();
+        let (ct, mut tag) = key.seal_detached(&NONCE, b"aad", &pt).expect("seal");
+
+        // Wrong AAD fails.
+        assert_eq!(
+            key.open_detached(&NONCE, b"other", &ct, &tag),
+            Err(Error::Decrypt)
+        );
+        // Tampered tag fails.
+        tag[0] ^= 0xff;
+        assert_eq!(
+            key.open_detached(&NONCE, b"aad", &ct, &tag),
+            Err(Error::Decrypt)
+        );
+        // Wrong-length tag fails.
+        assert_eq!(
+            key.open_detached(&NONCE, b"aad", &ct, &tag[..15]),
+            Err(Error::Decrypt)
+        );
+    }
+
+    #[test]
+    fn detached_rejects_bad_nonce_length() {
+        let key = HardwareAes256GcmKeyState::new(&[3_u8; 32]).expect("valid key");
+        assert_eq!(
+            key.seal_detached(&[0_u8; 11], &[], b"x"),
+            Err(Error::InvalidNonceLength)
+        );
     }
 }
 
