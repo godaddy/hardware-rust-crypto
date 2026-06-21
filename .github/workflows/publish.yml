@@ -38,6 +38,16 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Publish hardware-rust-crypto
-        run: cargo publish --package hardware-rust-crypto --locked
+        # Idempotent: skip if this version is already on crates.io (e.g. a tag was
+        # re-pushed or the job re-run), so it never fails on "already exists".
+        run: |
+          version=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "hardware-rust-crypto") | .version')
+          if curl -fsSL "https://index.crates.io/ha/rd/hardware-rust-crypto" \
+               | grep -q "\"vers\":\"${version}\""; then
+            echo "hardware-rust-crypto@${version} is already on crates.io — skipping publish."
+          else
+            cargo publish --package hardware-rust-crypto --locked
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
